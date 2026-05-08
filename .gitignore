@@ -12,6 +12,7 @@ __pycache__/
 *.pyo
 .venv/
 .python-version
+.pytest_cache/
 
 # secrets
 .env
