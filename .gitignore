@@ -1,0 +1,30 @@
+# databases / large artifacts
+*.db
+*.db-journal
+*.parquet
+
+# logs
+*.log
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.python-version
+
+# secrets
+.env
+.env.*
+
+# claude per-user local settings (memory/rules are committed)
+.claude/settings.local.json
+
+# editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# scratch (mining experiments, hypothesis dirs, factor_lab probes)
+# rationale: focus polybot/. scratch is personal workspace, not source-of-truth.
+/scratch/
