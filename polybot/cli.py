@@ -4,11 +4,9 @@ Usage:
     uv run python cli.py status
     uv run python cli.py settled  [hypothesis]   # default: all
     uv run python cli.py open     [hypothesis]
-    uv run python cli.py rolling  [n]            # rolling per-trade ret over last n
+    uv run python cli.py drift    [hypothesis]   # backtest vs paper EV
+    uv run python cli.py rolling  [n]            # rolling per-trade backtest pnl
     uv run python cli.py log      [n]            # tail polybot.log
-
-Old copy-trade tables (paper_trades / real_trades) remain in the same db; use
-`git checkout copy-archive-2026-05-08 -- polybot/cli.py` to query those.
 """
 import sys
 import sqlite3
@@ -23,82 +21,122 @@ def conn():
     return c
 
 
-def _hyp_filter(hyp: str | None) -> tuple[str, tuple]:
+def _hyp_filter(hyp):
     return ("AND hypothesis=? ", (hyp,)) if hyp else ("", ())
 
 
 def cmd_status():
     c = conn()
-    rows = c.execute(f"SELECT hypothesis, status, COUNT(*) c FROM {TABLE} GROUP BY 1,2 ORDER BY 1,2").fetchall()
+    rows = c.execute(
+        f"SELECT hypothesis, status, COUNT(*) n FROM {TABLE} GROUP BY 1,2 ORDER BY 1,2"
+    ).fetchall()
     if not rows:
         print(f"{TABLE}: empty")
         return
     print(f"{'hyp':<6} {'status':<10} {'n':>5}")
     for r in rows:
-        print(f"{r['hypothesis']:<6} {r['status']:<10} {r['c']:>5}")
+        print(f"{r['hypothesis']:<6} {r['status']:<10} {r['n']:>5}")
 
 
-def cmd_settled(hyp: str | None = None):
+def cmd_settled(hyp=None):
     c = conn()
     flt, args = _hyp_filter(hyp)
     rows = c.execute(
-        f"SELECT id, hypothesis, candle_start, entry_price, up_won, pnl_pct, pnl_usd "
+        f"SELECT id, hypothesis, candle_start, entry_price_backtest, entry_price_paper, "
+        f"up_won, pnl_pct_backtest, pnl_pct_paper, pnl_drift_pct "
         f"FROM {TABLE} WHERE status='settled' {flt}ORDER BY candle_start", args
     ).fetchall()
-    wins = sum(1 for r in rows if r['pnl_pct'] is not None and r['pnl_pct'] > 0)
-    losses = sum(1 for r in rows if r['pnl_pct'] is not None and r['pnl_pct'] < 0)
-    pnl = sum(r['pnl_usd'] or 0 for r in rows)
+    bt_pnl = sum(r['pnl_pct_backtest'] or 0 for r in rows)
+    p_pnl  = sum(r['pnl_pct_paper']    or 0 for r in rows if r['pnl_pct_paper'] is not None)
+    n_paper = sum(1 for r in rows if r['pnl_pct_paper'] is not None)
     for r in rows:
-        tag = "WIN" if (r['pnl_pct'] or 0) > 0 else "LOSS"
+        ep = r['entry_price_paper']
+        ep_str = f"{ep:.3f}" if ep is not None else "n/a"
+        pp = r['pnl_pct_paper']
+        pp_str = f"{pp:+.1%}" if pp is not None else "n/a"
         print(f"#{r['id']:>4} [{r['hypothesis']}] cs={r['candle_start']} "
-              f"entry={r['entry_price']:.3f} up_won={r['up_won']} {tag} "
-              f"pnl={r['pnl_pct']:+.1%} (${r['pnl_usd']:+.2f})")
-    n = wins + losses
+              f"bt_entry={r['entry_price_backtest']:.3f} paper_entry={ep_str} "
+              f"won={r['up_won']} bt={r['pnl_pct_backtest']:+.1%} paper={pp_str}")
+    n = len(rows)
     if n:
-        avg_pct = sum(r['pnl_pct'] for r in rows if r['pnl_pct'] is not None) / n
-        print(f"\nN={n} W={wins} L={losses} WR={wins/n:.0%} "
-              f"net=${pnl:+.2f} avg_pct={avg_pct:+.1%}")
+        print(f"\nN={n}  bt_avg_pct={bt_pnl/n:+.2%}  paper_avg_pct="
+              f"{p_pnl/n_paper:+.2%}({n_paper} rows)" if n_paper else f"\nN={n} bt_avg={bt_pnl/n:+.2%} paper=n/a")
 
 
-def cmd_open(hyp: str | None = None):
+def cmd_open(hyp=None):
     c = conn()
     flt, args = _hyp_filter(hyp)
     rows = c.execute(
-        f"SELECT id, hypothesis, candle_start, entry_price, opened_at "
+        f"SELECT id, hypothesis, candle_start, entry_price_backtest, entry_price_paper, opened_at "
         f"FROM {TABLE} WHERE status='open' {flt}ORDER BY id", args
     ).fetchall()
     for r in rows:
+        ep = r['entry_price_paper']
+        ep_str = f"{ep:.3f}" if ep is not None else "n/a"
         print(f"#{r['id']:>4} [{r['hypothesis']}] cs={r['candle_start']} "
-              f"entry={r['entry_price']:.3f} opened_at={r['opened_at']}")
+              f"bt_entry={r['entry_price_backtest']:.3f} paper_entry={ep_str}")
     print(f"\n{len(rows)} open")
 
 
-def cmd_rolling(n: int = 50):
+def cmd_drift(hyp=None):
+    """Per-hypothesis: backtest avg pnl vs paper avg pnl, drift, n with paper price."""
+    c = conn()
+    flt, args = _hyp_filter(hyp)
+    rows = c.execute(
+        f"SELECT hypothesis, "
+        f"COUNT(*) n_total, "
+        f"AVG(pnl_pct_backtest)              avg_bt, "
+        f"AVG(pnl_pct_paper)                 avg_paper, "
+        f"AVG(pnl_drift_pct)                 avg_drift, "
+        f"SUM(CASE WHEN entry_price_paper IS NOT NULL THEN 1 ELSE 0 END) n_paper "
+        f"FROM {TABLE} WHERE status='settled' {flt}GROUP BY hypothesis", args
+    ).fetchall()
+    if not rows:
+        print("no settled trades")
+        return
+    print(f"{'hyp':<6} {'n':>4} {'n_paper':>8} {'avg_bt':>9} {'avg_paper':>10} {'drift':>9}")
+    for r in rows:
+        avg_bt = r['avg_bt'] or 0
+        avg_p  = r['avg_paper']
+        avg_d  = r['avg_drift']
+        avg_p_s = f"{avg_p:+.2%}" if avg_p is not None else "n/a"
+        avg_d_s = f"{avg_d:+.2%}" if avg_d is not None else "n/a"
+        print(f"{r['hypothesis']:<6} {r['n_total']:>4} {r['n_paper']:>8} "
+              f"{avg_bt:+.2%} {avg_p_s:>10} {avg_d_s:>9}")
+
+
+def cmd_rolling(n=50):
     c = conn()
     rows = c.execute(
-        f"SELECT id, hypothesis, pnl_pct FROM {TABLE} "
-        f"WHERE status='settled' AND pnl_pct IS NOT NULL "
+        f"SELECT id, hypothesis, pnl_pct_backtest, pnl_pct_paper FROM {TABLE} "
+        f"WHERE status='settled' AND pnl_pct_backtest IS NOT NULL "
         f"ORDER BY settled_at DESC LIMIT ?", (n,)
     ).fetchall()
     rows = list(reversed(rows))
-    cum = wins = 0.0
+    cum_bt = cum_p = wins = 0.0
+    n_p = 0
     for i, r in enumerate(rows, 1):
-        cum += r['pnl_pct']
-        if r['pnl_pct'] > 0:
+        cum_bt += r['pnl_pct_backtest']
+        if r['pnl_pct_backtest'] > 0:
             wins += 1
-        print(f"#{r['id']:>4} [{r['hypothesis']}] ret={r['pnl_pct']:+6.1%} "
-              f"avg={cum/i:+6.2%}")
+        if r['pnl_pct_paper'] is not None:
+            cum_p += r['pnl_pct_paper']; n_p += 1
+        pp = r['pnl_pct_paper']
+        pp_s = f"{pp:+6.1%}" if pp is not None else "  n/a "
+        print(f"#{r['id']:>4} [{r['hypothesis']}] bt={r['pnl_pct_backtest']:+6.1%} "
+              f"paper={pp_s} avg_bt={cum_bt/i:+6.2%}")
     if rows:
-        print(f"\nN={len(rows)} WR={wins/len(rows):.0%} avg={cum/len(rows):+.2%}")
+        print(f"\nN={len(rows)} WR_bt={wins/len(rows):.0%} avg_bt={cum_bt/len(rows):+.2%}"
+              f"{f'  avg_paper={cum_p/n_p:+.2%} (n={n_p})' if n_p else ''}")
 
 
-def cmd_log(n: int = 30):
+def cmd_log(n=30):
     import subprocess
     subprocess.run(["tail", f"-{n}", "polybot.log"])
 
 
 CMDS = {"status": cmd_status, "settled": cmd_settled, "open": cmd_open,
-        "rolling": cmd_rolling, "log": cmd_log}
+        "drift": cmd_drift, "rolling": cmd_rolling, "log": cmd_log}
 
 
 if __name__ == "__main__":
@@ -110,7 +148,7 @@ if __name__ == "__main__":
     args = sys.argv[2:]
     if cmd in ("rolling", "log") and args:
         fn(int(args[0]))
-    elif cmd in ("settled", "open"):
+    elif cmd in ("settled", "open", "drift"):
         fn(args[0] if args else None)
     else:
         fn()

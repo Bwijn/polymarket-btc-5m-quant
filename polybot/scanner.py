@@ -26,6 +26,7 @@ from factor.expr_eval_v1 import evaluate
 from factor.entry_price import get_price_at
 from factor.features import compute_row
 from pm_api import slug_for, fetch_event, parse_market, fetch_prices_history
+from pm_ws import BookCache
 
 log = logging.getLogger("polybot.scanner")
 
@@ -39,8 +40,9 @@ def _engine(db_path: str):
 
 
 class Scanner:
-    def __init__(self, db_path: str = DB_FILE):
+    def __init__(self, db_path: str = DB_FILE, book_cache: BookCache | None = None):
         self.engine = _engine(db_path)
+        self.book_cache = book_cache or BookCache()
         # In-memory de-dup of evaluated (strategy_id, cs) pairs. DB is SSOT for
         # hits; misses we keep ephemeral — process restart re-eval is harmless
         # because too-late candles are skipped by the time-window check.
@@ -82,7 +84,16 @@ class Scanner:
         if p_up is None:
             log.warning(f"[{strat.id}] cs={cs} HIT but p_up None — skip")
             return
-        entry_price = p_up if strat.direction == 'UP' else 1.0 - p_up
+        entry_price_backtest = p_up if strat.direction == 'UP' else 1.0 - p_up
+
+        # paper-side: live orderbook of OUR side's token (we BUY = cross to ask)
+        my_token = m['up_token'] if strat.direction == 'UP' else m['down_token']
+        snap = self.book_cache.snapshot(my_token)
+        book_bid = snap['best_bid'] if snap else None
+        book_ask = snap['best_ask'] if snap else None
+        book_mid = (book_bid + book_ask) / 2 if (book_bid is not None and book_ask is not None) else None
+        book_ts_ms = snap['ts_ms'] if snap else None
+        entry_price_paper = book_ask  # taker BUY pays ask
 
         row = PaperTrade5mBinary(
             hypothesis=strat.id,
@@ -95,7 +106,12 @@ class Scanner:
             candle_start=cs,
             entry_offset_s=strat.entry_offset_s,
             p_up_at_entry=p_up,
-            entry_price=entry_price,
+            entry_price_backtest=entry_price_backtest,
+            book_bid=book_bid,
+            book_ask=book_ask,
+            book_mid=book_mid,
+            book_ts_ms=book_ts_ms,
+            entry_price_paper=entry_price_paper,
             size_usd=PAPER_SIZE_USD,
             trigger_features=df.iloc[0].to_json(),
             status=TradeStatus.open,
@@ -105,7 +121,10 @@ class Scanner:
             s.add(row)
             s.commit()
             s.refresh(row)
-        log.info(f"[{strat.id}] HIT cs={cs} p_up={p_up:.3f} entry={entry_price:.3f} "
+        drift = (entry_price_paper - entry_price_backtest) if entry_price_paper else None
+        log.info(f"[{strat.id}] HIT cs={cs} p_up={p_up:.3f} "
+                 f"entry_bt={entry_price_backtest:.3f} entry_paper={entry_price_paper} "
+                 f"drift={f'{drift:+.3f}' if drift is not None else 'n/a'} "
                  f"size=${PAPER_SIZE_USD:.2f} #{row.id}")
 
     # ---- settle -------------------------------------------------------------
@@ -122,26 +141,41 @@ class Scanner:
             (row.direction == 'UP'   and m['up_won'] == 1) or
             (row.direction == 'DOWN' and m['up_won'] == 0)
         )
+        # backtest pnl
         if my_won:
-            pnl_pct = (1.0 - row.entry_price) / row.entry_price
+            pnl_pct_bt = (1.0 - row.entry_price_backtest) / row.entry_price_backtest
         else:
-            pnl_pct = -1.0
-        pnl_usd = pnl_pct * row.size_usd
+            pnl_pct_bt = -1.0
+        pnl_usd_bt = pnl_pct_bt * row.size_usd
+
+        # paper pnl (only if we captured book_ask at trigger)
+        pnl_pct_paper = pnl_usd_paper = pnl_drift = None
+        if row.entry_price_paper is not None and row.entry_price_paper > 0:
+            if my_won:
+                pnl_pct_paper = (1.0 - row.entry_price_paper) / row.entry_price_paper
+            else:
+                pnl_pct_paper = -1.0
+            pnl_usd_paper = pnl_pct_paper * row.size_usd
+            pnl_drift = pnl_pct_paper - pnl_pct_bt
 
         with Session(self.engine) as s:
             db_row = s.get(PaperTrade5mBinary, row.id)
             db_row.status = TradeStatus.settled
             db_row.up_won = m['up_won']
-            db_row.pnl_pct = pnl_pct
-            db_row.pnl_usd = pnl_usd
+            db_row.pnl_pct_backtest = pnl_pct_bt
+            db_row.pnl_pct_paper = pnl_pct_paper
+            db_row.pnl_drift_pct = pnl_drift
+            db_row.pnl_usd_backtest = pnl_usd_bt
+            db_row.pnl_usd_paper = pnl_usd_paper
             db_row.settled_at = int(time.time())
             s.add(db_row)
             s.commit()
 
         outcome = "WIN" if my_won else "LOSS"
+        paper_str = (f"paper={pnl_pct_paper:+.1%} drift={pnl_drift:+.1%}"
+                     if pnl_pct_paper is not None else "paper=n/a")
         log.info(f"settle #{row.id} [{row.hypothesis}] {outcome} "
-                 f"entry={row.entry_price:.3f} pnl={pnl_pct:+.1%} (${pnl_usd:+.2f}) "
-                 f"up_won={m['up_won']}")
+                 f"bt={pnl_pct_bt:+.1%} {paper_str} up_won={m['up_won']}")
 
     # ---- main tick ----------------------------------------------------------
     async def tick(self) -> None:

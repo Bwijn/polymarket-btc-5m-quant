@@ -1,7 +1,13 @@
 """DB models for binary 5m paper trade scanner.
 
-Coexists with old copy-trade tables (paper_trades, real_trades) in same
-polybot.db. New table only.
+Coexists with old copy-trade tables in same polybot.db (paper_trades, real_trades).
+
+Design rationale: paper trade's deliverable is *drift between backtest and
+real orderbook*. Each row records BOTH:
+  - backtest entry: 1 - p_up_at_entry  (carry-forward from prices-history fid=1)
+  - paper entry:    book_ask           (live ws best_ask of our side's token)
+At settle we compute pnl_pct twice; their difference = drift, the metric for
+go/no-go on live promotion.
 """
 from enum import Enum
 from sqlmodel import SQLModel, Field
@@ -10,7 +16,7 @@ from sqlmodel import SQLModel, Field
 class TradeStatus(str, Enum):
     open = "open"
     settled = "settled"
-    error = "error"        # ingest / settle failure; do not re-process
+    error = "error"
 
 
 class Direction(str, Enum):
@@ -19,42 +25,53 @@ class Direction(str, Enum):
 
 
 class PaperTrade5mBinary(SQLModel, table=True):
-    """One row per triggered candle. paper_trade_5m_binary.
+    """One row per triggered candle.
 
-    entry_price = price actually paid for our direction's token at cs+entry_offset_s.
-        UP-bet  → entry_price = p_up_at_entry
-        DOWN-bet → entry_price = 1 - p_up_at_entry  (binary complement)
-    pnl_pct (after settle):
-        win  → (1.0 - entry_price) / entry_price
-        loss → -1.0  (lose entire stake)
-    Friction NOT applied here — recorded raw; deflate at report time.
+    PnL semantics for our side:
+        win  → entry_price → 1.0 (token settles at 1)   pnl_pct = (1-entry)/entry
+        loss → entry_price → 0.0 (token settles at 0)   pnl_pct = -1.0
+    Friction NOT applied — recorded raw; deflate at report time.
     """
     __tablename__ = "paper_trade_5m_binary"
 
     id: int | None = Field(default=None, primary_key=True)
 
-    hypothesis: str            # 'H5', 'H6', ...
-    expr: str                  # trigger expression text (audit)
+    hypothesis: str
+    expr: str
     direction: Direction
 
-    slug: str                  # btc-updown-5m-{cs}
-    market_id: str             # conditionId
+    slug: str
+    market_id: str
     up_token: str
     down_token: str
 
-    candle_start: int          # cs (UTC unix, mod 300 == 0)
-    entry_offset_s: int        # H5=60, H6=120
+    candle_start: int
+    entry_offset_s: int
 
-    p_up_at_entry: float       # UP-token price at cs+entry_offset_s (carry-forward)
-    entry_price: float         # our side's price (UP→p_up; DOWN→1-p_up)
-    size_usd: float            # nominal stake recorded at trigger time
-    trigger_features: str      # JSON: {base_col: value, ...} actually evaluated
+    # backtest-side: from CLOB /prices-history fidelity=1, carry-forward
+    p_up_at_entry: float                      # UP price at cs+entry_offset_s
+    entry_price_backtest: float               # our side; UP→p_up, DOWN→1-p_up
+    trigger_features: str                     # JSON snapshot of evaluated features
 
+    # paper-side: from ws CLOB market channel, real orderbook at trigger moment
+    book_bid: float | None = None             # our token's best_bid
+    book_ask: float | None = None             # our token's best_ask
+    book_mid: float | None = None             # (bid+ask)/2
+    book_ts_ms: int | None = None             # ms timestamp of the ws update used
+    entry_price_paper: float | None = None    # what we'd actually pay = book_ask
+                                              # (taker BUY crosses the spread)
+
+    size_usd: float
+
+    # ---- settle ----
     status: TradeStatus = TradeStatus.open
-    up_won: int | None = None         # 0/1 once event closed
-    pnl_pct: float | None = None      # ratio, not %
-    pnl_usd: float | None = None      # pnl_pct * size_usd
+    up_won: int | None = None
+    pnl_pct_backtest: float | None = None
+    pnl_pct_paper: float | None = None
+    pnl_drift_pct: float | None = None        # paper - backtest
+    pnl_usd_backtest: float | None = None
+    pnl_usd_paper: float | None = None
 
-    opened_at: int                    # unix at trigger
+    opened_at: int
     settled_at: int | None = None
-    error_msg: str | None = None      # populated when status=error
+    error_msg: str | None = None
