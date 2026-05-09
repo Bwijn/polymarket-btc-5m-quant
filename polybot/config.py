@@ -18,10 +18,13 @@ DB_FILE   = "polybot.db"
 LOG_FILE  = "polybot.log"
 
 # ---- paper phase ------------------------------------------------------------
-# Tick budget: scanner wakes every TICK_S to (a) trigger eval, (b) settle.
-TICK_S            = 5
-ENTRY_LAG_S       = 8         # wait this much past cs+entry_offset for ticks to land
-SETTLE_LAG_S      = 60        # wait this much past cs+300 before settle (event resolution lag)
+# Timer-driven schedule. Each (strategy, candle) gets one asyncio task that
+# precisely sleeps until cs+entry_offset+ENTRY_LAG_S. No polling for trigger
+# evaluation — wakeup is wall-clock-aligned to the strategy's entry moment.
+ENTRY_LAG_S       = 1         # past cs+entry_offset, give server 1s to expose 1-min sample
+SETTLE_LAG_S      = 60        # wait past cs+300 before trying settle (resolution lag)
+SCHEDULE_REFRESH_S = 60       # rescan upcoming candles + register schedule tasks
+SETTLE_POLL_S     = 30        # poll open rows for settle
 
 # size_usd recorded per paper trade (Kelly applied per-strategy in scanner —
 # this is fallback / nominal). Real wallet = $34.13, 5% Kelly → $1.71.

@@ -42,24 +42,24 @@ def cmd_settled(hyp=None):
     c = conn()
     flt, args = _hyp_filter(hyp)
     rows = c.execute(
-        f"SELECT id, hypothesis, candle_start, entry_price_backtest, entry_price_paper, "
-        f"up_won, pnl_pct_backtest, pnl_pct_paper, pnl_drift_pct "
-        f"FROM {TABLE} WHERE status='settled' {flt}ORDER BY candle_start", args
+        f"SELECT id, hypothesis, candle_start_s, entry_price_backtest, entry_price_paper, "
+        f"up_won, pnl_ratio_backtest, pnl_ratio_paper, pnl_ratio_drift "
+        f"FROM {TABLE} WHERE status='settled' {flt}ORDER BY candle_start_s", args
     ).fetchall()
-    bt_pnl = sum(r['pnl_pct_backtest'] or 0 for r in rows)
-    p_pnl  = sum(r['pnl_pct_paper']    or 0 for r in rows if r['pnl_pct_paper'] is not None)
-    n_paper = sum(1 for r in rows if r['pnl_pct_paper'] is not None)
+    bt_pnl = sum(r['pnl_ratio_backtest'] or 0 for r in rows)
+    p_pnl  = sum(r['pnl_ratio_paper']    or 0 for r in rows if r['pnl_ratio_paper'] is not None)
+    n_paper = sum(1 for r in rows if r['pnl_ratio_paper'] is not None)
     for r in rows:
         ep = r['entry_price_paper']
         ep_str = f"{ep:.3f}" if ep is not None else "n/a"
-        pp = r['pnl_pct_paper']
+        pp = r['pnl_ratio_paper']
         pp_str = f"{pp:+.1%}" if pp is not None else "n/a"
-        print(f"#{r['id']:>4} [{r['hypothesis']}] cs={r['candle_start']} "
+        print(f"#{r['id']:>4} [{r['hypothesis']}] cs={r['candle_start_s']} "
               f"bt_entry={r['entry_price_backtest']:.3f} paper_entry={ep_str} "
-              f"won={r['up_won']} bt={r['pnl_pct_backtest']:+.1%} paper={pp_str}")
+              f"won={r['up_won']} bt={r['pnl_ratio_backtest']:+.1%} paper={pp_str}")
     n = len(rows)
     if n:
-        print(f"\nN={n}  bt_avg_pct={bt_pnl/n:+.2%}  paper_avg_pct="
+        print(f"\nN={n}  bt_avg={bt_pnl/n:+.2%}  paper_avg="
               f"{p_pnl/n_paper:+.2%}({n_paper} rows)" if n_paper else f"\nN={n} bt_avg={bt_pnl/n:+.2%} paper=n/a")
 
 
@@ -67,13 +67,13 @@ def cmd_open(hyp=None):
     c = conn()
     flt, args = _hyp_filter(hyp)
     rows = c.execute(
-        f"SELECT id, hypothesis, candle_start, entry_price_backtest, entry_price_paper, opened_at "
+        f"SELECT id, hypothesis, candle_start_s, entry_price_backtest, entry_price_paper, opened_at_s "
         f"FROM {TABLE} WHERE status='open' {flt}ORDER BY id", args
     ).fetchall()
     for r in rows:
         ep = r['entry_price_paper']
         ep_str = f"{ep:.3f}" if ep is not None else "n/a"
-        print(f"#{r['id']:>4} [{r['hypothesis']}] cs={r['candle_start']} "
+        print(f"#{r['id']:>4} [{r['hypothesis']}] cs={r['candle_start_s']} "
               f"bt_entry={r['entry_price_backtest']:.3f} paper_entry={ep_str}")
     print(f"\n{len(rows)} open")
 
@@ -85,9 +85,9 @@ def cmd_drift(hyp=None):
     rows = c.execute(
         f"SELECT hypothesis, "
         f"COUNT(*) n_total, "
-        f"AVG(pnl_pct_backtest)              avg_bt, "
-        f"AVG(pnl_pct_paper)                 avg_paper, "
-        f"AVG(pnl_drift_pct)                 avg_drift, "
+        f"AVG(pnl_ratio_backtest)               avg_bt, "
+        f"AVG(pnl_ratio_paper)                  avg_paper, "
+        f"AVG(pnl_ratio_drift)                  avg_drift, "
         f"SUM(CASE WHEN entry_price_paper IS NOT NULL THEN 1 ELSE 0 END) n_paper "
         f"FROM {TABLE} WHERE status='settled' {flt}GROUP BY hypothesis", args
     ).fetchall()
@@ -108,22 +108,22 @@ def cmd_drift(hyp=None):
 def cmd_rolling(n=50):
     c = conn()
     rows = c.execute(
-        f"SELECT id, hypothesis, pnl_pct_backtest, pnl_pct_paper FROM {TABLE} "
-        f"WHERE status='settled' AND pnl_pct_backtest IS NOT NULL "
-        f"ORDER BY settled_at DESC LIMIT ?", (n,)
+        f"SELECT id, hypothesis, pnl_ratio_backtest, pnl_ratio_paper FROM {TABLE} "
+        f"WHERE status='settled' AND pnl_ratio_backtest IS NOT NULL "
+        f"ORDER BY settled_at_s DESC LIMIT ?", (n,)
     ).fetchall()
     rows = list(reversed(rows))
     cum_bt = cum_p = wins = 0.0
     n_p = 0
     for i, r in enumerate(rows, 1):
-        cum_bt += r['pnl_pct_backtest']
-        if r['pnl_pct_backtest'] > 0:
+        cum_bt += r['pnl_ratio_backtest']
+        if r['pnl_ratio_backtest'] > 0:
             wins += 1
-        if r['pnl_pct_paper'] is not None:
-            cum_p += r['pnl_pct_paper']; n_p += 1
-        pp = r['pnl_pct_paper']
+        if r['pnl_ratio_paper'] is not None:
+            cum_p += r['pnl_ratio_paper']; n_p += 1
+        pp = r['pnl_ratio_paper']
         pp_s = f"{pp:+6.1%}" if pp is not None else "  n/a "
-        print(f"#{r['id']:>4} [{r['hypothesis']}] bt={r['pnl_pct_backtest']:+6.1%} "
+        print(f"#{r['id']:>4} [{r['hypothesis']}] bt={r['pnl_ratio_backtest']:+6.1%} "
               f"paper={pp_s} avg_bt={cum_bt/i:+6.2%}")
     if rows:
         print(f"\nN={len(rows)} WR_bt={wins/len(rows):.0%} avg_bt={cum_bt/len(rows):+.2%}"

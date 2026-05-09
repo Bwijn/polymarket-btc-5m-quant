@@ -19,7 +19,8 @@ import time
 from typing import Optional
 from sqlmodel import Session, select, SQLModel, create_engine
 
-from config import DB_FILE, TICK_S, ENTRY_LAG_S, SETTLE_LAG_S, PAPER_SIZE_USD
+from config import (DB_FILE, ENTRY_LAG_S, SETTLE_LAG_S, PAPER_SIZE_USD,
+                    SCHEDULE_REFRESH_S, SETTLE_POLL_S)
 from models import PaperTrade5mBinary, TradeStatus, Direction
 from strategies import ACTIVE, Strategy
 from factor.expr_eval_v1 import evaluate
@@ -43,16 +44,17 @@ class Scanner:
     def __init__(self, db_path: str = DB_FILE, book_cache: BookCache | None = None):
         self.engine = _engine(db_path)
         self.book_cache = book_cache or BookCache()
-        # In-memory de-dup of evaluated (strategy_id, cs) pairs. DB is SSOT for
-        # hits; misses we keep ephemeral — process restart re-eval is harmless
-        # because too-late candles are skipped by the time-window check.
+        # _evaluated: (strategy_id, cs) we've already eval'd (hit or miss).
+        # _scheduled: (strategy_id, cs) we've already created an asyncio task for.
+        # DB is SSOT for hits; sets are ephemeral — restart re-seeds from DB.
         self._evaluated: set[tuple[str, int]] = set()
+        self._scheduled: set[tuple[str, int]] = set()
 
     def _seed_evaluated_from_db(self, cs_min: int) -> None:
         with Session(self.engine) as s:
             rows = s.exec(
-                select(PaperTrade5mBinary.hypothesis, PaperTrade5mBinary.candle_start)
-                .where(PaperTrade5mBinary.candle_start >= cs_min)
+                select(PaperTrade5mBinary.hypothesis, PaperTrade5mBinary.candle_start_s)
+                .where(PaperTrade5mBinary.candle_start_s >= cs_min)
             ).all()
         for r in rows:
             self._evaluated.add((r[0], r[1]))
@@ -69,7 +71,10 @@ class Scanner:
             log.warning(f"[{strat.id}] cs={cs} market unparseable")
             return
 
-        ticks = await fetch_prices_history(m['up_token'], cs, cs + strat.entry_offset_s, fidelity=1)
+        # startTs=cs-3600 matches mining backfill — gives carry-forward fallback for the
+        # ~3.9% of candles with no trade in [cs, cs+60]. Without pre-market window,
+        # get_price_at returns None → NaN → fillna(False) → false miss vs mining's hit/miss.
+        ticks = await fetch_prices_history(m['up_token'], cs - 3600, cs + strat.entry_offset_s, fidelity=1)
         if not ticks:
             log.info(f"[{strat.id}] cs={cs} no ticks yet")
             return
@@ -86,14 +91,17 @@ class Scanner:
             return
         entry_price_backtest = p_up if strat.direction == 'UP' else 1.0 - p_up
 
-        # paper-side: live orderbook of OUR side's token (we BUY = cross to ask)
-        my_token = m['up_token'] if strat.direction == 'UP' else m['down_token']
-        snap = self.book_cache.snapshot(my_token)
-        book_bid = snap['best_bid'] if snap else None
-        book_ask = snap['best_ask'] if snap else None
-        book_mid = (book_bid + book_ask) / 2 if (book_bid is not None and book_ask is not None) else None
-        book_ts_ms = snap['ts_ms'] if snap else None
-        entry_price_paper = book_ask  # taker BUY pays ask
+        # paper-side: live orderbook BOTH sides recorded for arb_gap analysis.
+        # Entry price = our side's ask (taker BUY crosses spread).
+        snap_up = self.book_cache.snapshot(m['up_token'])
+        snap_dn = self.book_cache.snapshot(m['down_token'])
+        book_bid_up = snap_up['best_bid'] if snap_up else None
+        book_ask_up = snap_up['best_ask'] if snap_up else None
+        book_bid_dn = snap_dn['best_bid'] if snap_dn else None
+        book_ask_dn = snap_dn['best_ask'] if snap_dn else None
+        book_ts_ms_up = snap_up['ts_ms'] if snap_up else None
+        book_ts_ms_dn = snap_dn['ts_ms'] if snap_dn else None
+        entry_price_paper = book_ask_up if strat.direction == 'UP' else book_ask_dn
 
         row = PaperTrade5mBinary(
             hypothesis=strat.id,
@@ -103,19 +111,21 @@ class Scanner:
             market_id=m['market_id'],
             up_token=m['up_token'],
             down_token=m['down_token'],
-            candle_start=cs,
+            candle_start_s=cs,
             entry_offset_s=strat.entry_offset_s,
             p_up_at_entry=p_up,
             entry_price_backtest=entry_price_backtest,
-            book_bid=book_bid,
-            book_ask=book_ask,
-            book_mid=book_mid,
-            book_ts_ms=book_ts_ms,
+            book_bid_up=book_bid_up,
+            book_ask_up=book_ask_up,
+            book_bid_dn=book_bid_dn,
+            book_ask_dn=book_ask_dn,
+            book_ts_ms_up=book_ts_ms_up,
+            book_ts_ms_dn=book_ts_ms_dn,
             entry_price_paper=entry_price_paper,
             size_usd=PAPER_SIZE_USD,
             trigger_features=df.iloc[0].to_json(),
             status=TradeStatus.open,
-            opened_at=int(time.time()),
+            opened_at_s=int(time.time()),
         )
         with Session(self.engine) as s:
             s.add(row)
@@ -141,90 +151,108 @@ class Scanner:
             (row.direction == 'UP'   and m['up_won'] == 1) or
             (row.direction == 'DOWN' and m['up_won'] == 0)
         )
-        # backtest pnl
+        # backtest pnl ratio
         if my_won:
-            pnl_pct_bt = (1.0 - row.entry_price_backtest) / row.entry_price_backtest
+            pnl_ratio_bt = (1.0 - row.entry_price_backtest) / row.entry_price_backtest
         else:
-            pnl_pct_bt = -1.0
-        pnl_usd_bt = pnl_pct_bt * row.size_usd
+            pnl_ratio_bt = -1.0
+        pnl_usd_bt = pnl_ratio_bt * row.size_usd
 
-        # paper pnl (only if we captured book_ask at trigger)
-        pnl_pct_paper = pnl_usd_paper = pnl_drift = None
+        # paper pnl ratio (only if we captured book_ask at trigger)
+        pnl_ratio_paper = pnl_usd_paper = pnl_ratio_drift = None
         if row.entry_price_paper is not None and row.entry_price_paper > 0:
             if my_won:
-                pnl_pct_paper = (1.0 - row.entry_price_paper) / row.entry_price_paper
+                pnl_ratio_paper = (1.0 - row.entry_price_paper) / row.entry_price_paper
             else:
-                pnl_pct_paper = -1.0
-            pnl_usd_paper = pnl_pct_paper * row.size_usd
-            pnl_drift = pnl_pct_paper - pnl_pct_bt
+                pnl_ratio_paper = -1.0
+            pnl_usd_paper = pnl_ratio_paper * row.size_usd
+            pnl_ratio_drift = pnl_ratio_paper - pnl_ratio_bt
 
         with Session(self.engine) as s:
             db_row = s.get(PaperTrade5mBinary, row.id)
             db_row.status = TradeStatus.settled
             db_row.up_won = m['up_won']
-            db_row.pnl_pct_backtest = pnl_pct_bt
-            db_row.pnl_pct_paper = pnl_pct_paper
-            db_row.pnl_drift_pct = pnl_drift
+            db_row.pnl_ratio_backtest = pnl_ratio_bt
+            db_row.pnl_ratio_paper = pnl_ratio_paper
+            db_row.pnl_ratio_drift = pnl_ratio_drift
             db_row.pnl_usd_backtest = pnl_usd_bt
             db_row.pnl_usd_paper = pnl_usd_paper
-            db_row.settled_at = int(time.time())
+            db_row.settled_at_s = int(time.time())
             s.add(db_row)
             s.commit()
 
         outcome = "WIN" if my_won else "LOSS"
-        paper_str = (f"paper={pnl_pct_paper:+.1%} drift={pnl_drift:+.1%}"
-                     if pnl_pct_paper is not None else "paper=n/a")
+        paper_str = (f"paper={pnl_ratio_paper:+.1%} drift={pnl_ratio_drift:+.1%}"
+                     if pnl_ratio_paper is not None else "paper=n/a")
         log.info(f"settle #{row.id} [{row.hypothesis}] {outcome} "
-                 f"bt={pnl_pct_bt:+.1%} {paper_str} up_won={m['up_won']}")
+                 f"bt={pnl_ratio_bt:+.1%} {paper_str} up_won={m['up_won']}")
 
-    # ---- main tick ----------------------------------------------------------
-    async def tick(self) -> None:
-        now = int(time.time())
-        cs_now  = (now // CANDLE_S) * CANDLE_S
-        cs_prev = cs_now - CANDLE_S
-        candles_to_check = [cs_prev, cs_now]
+    # ---- timer-driven trigger ----------------------------------------------
+    async def schedule_one(self, strat: Strategy, cs: int) -> None:
+        """Sleep until cs+entry_offset+ENTRY_LAG_S, then evaluate. ms-precision wakeup."""
+        target_t = cs + strat.entry_offset_s + ENTRY_LAG_S
+        delay = target_t - time.time()
+        if delay > 0:
+            await asyncio.sleep(delay)
+        if (strat.id, cs) in self._evaluated:
+            return
+        try:
+            await self.eval_one(strat, cs)
+        except Exception as e:
+            log.exception(f"[{strat.id}] cs={cs} eval error: {e}")
 
-        for strat in ACTIVE:
-            for cs in candles_to_check:
-                if (strat.id, cs) in self._evaluated:
-                    continue
-                if now < cs + strat.entry_offset_s + ENTRY_LAG_S:
-                    continue
-                if now > cs + CANDLE_S + ENTRY_LAG_S:
-                    self._evaluated.add((strat.id, cs))   # too late, never reconsider
-                    continue
-                try:
-                    await self.eval_one(strat, cs)
-                except Exception as e:
-                    log.exception(f"[{strat.id}] cs={cs} eval error: {e}")
-
-        # settle — old enough open rows
-        cutoff = now - CANDLE_S - SETTLE_LAG_S
-        with Session(self.engine) as s:
-            open_rows = s.exec(
-                select(PaperTrade5mBinary)
-                .where(PaperTrade5mBinary.status == TradeStatus.open)
-                .where(PaperTrade5mBinary.candle_start <= cutoff)
-            ).all()
-        for row in open_rows:
-            try:
-                await self.settle_one(row)
-            except Exception as e:
-                log.exception(f"settle #{row.id} error: {e}")
-
-        # garbage-collect stale evaluated keys (older than 2 candles)
-        gc_cutoff = cs_prev - CANDLE_S
-        self._evaluated = {(h, cs) for (h, cs) in self._evaluated if cs >= gc_cutoff}
-
-    async def run_forever(self) -> None:
-        # Seed with hits already recorded to avoid duplicate INSERT after restart
-        cs_now = (int(time.time()) // CANDLE_S) * CANDLE_S
-        self._seed_evaluated_from_db(cs_min=cs_now - CANDLE_S * 2)
-        log.info(f"scanner up: tick={TICK_S}s entry_lag={ENTRY_LAG_S}s settle_lag={SETTLE_LAG_S}s "
-                 f"strategies={[s.id for s in ACTIVE]} seeded={len(self._evaluated)}")
+    async def schedule_loop(self) -> None:
+        """Periodically register schedule_one tasks for current + next candle."""
+        log.info(f"schedule loop: entry_lag={ENTRY_LAG_S}s "
+                 f"strategies={[s.id for s in ACTIVE]}")
         while True:
             try:
-                await self.tick()
+                now = int(time.time())
+                cs_now  = (now // CANDLE_S) * CANDLE_S
+                cs_prev = cs_now - CANDLE_S
+                for strat in ACTIVE:
+                    for cs in (cs_prev, cs_now, cs_now + CANDLE_S):
+                        key = (strat.id, cs)
+                        if key in self._scheduled or key in self._evaluated:
+                            continue
+                        # too-late: entry window already closed (e.g. after restart)
+                        if now > cs + CANDLE_S + ENTRY_LAG_S:
+                            self._evaluated.add(key)
+                            continue
+                        self._scheduled.add(key)
+                        asyncio.create_task(self.schedule_one(strat, cs))
+                # GC ephemeral sets — keep only last 2 candles
+                gc_cutoff = cs_now - CANDLE_S * 2
+                self._evaluated = {(h, c) for (h, c) in self._evaluated if c >= gc_cutoff}
+                self._scheduled = {(h, c) for (h, c) in self._scheduled if c >= gc_cutoff}
             except Exception as e:
-                log.exception(f"tick error: {e}")
-            await asyncio.sleep(TICK_S)
+                log.exception(f"schedule_loop error: {e}")
+            await asyncio.sleep(SCHEDULE_REFRESH_S)
+
+    # ---- settle loop --------------------------------------------------------
+    async def settle_loop(self) -> None:
+        log.info(f"settle loop: settle_lag={SETTLE_LAG_S}s poll={SETTLE_POLL_S}s")
+        while True:
+            try:
+                cutoff = int(time.time()) - CANDLE_S - SETTLE_LAG_S
+                with Session(self.engine) as s:
+                    open_rows = s.exec(
+                        select(PaperTrade5mBinary)
+                        .where(PaperTrade5mBinary.status == TradeStatus.open)
+                        .where(PaperTrade5mBinary.candle_start_s <= cutoff)
+                    ).all()
+                for row in open_rows:
+                    try:
+                        await self.settle_one(row)
+                    except Exception as e:
+                        log.exception(f"settle #{row.id} error: {e}")
+            except Exception as e:
+                log.exception(f"settle_loop error: {e}")
+            await asyncio.sleep(SETTLE_POLL_S)
+
+    async def run_forever(self) -> None:
+        # Seed with hits already recorded so we don't re-INSERT after restart
+        cs_now = (int(time.time()) // CANDLE_S) * CANDLE_S
+        self._seed_evaluated_from_db(cs_min=cs_now - CANDLE_S * 2)
+        log.info(f"scanner up seeded={len(self._evaluated)}")
+        await asyncio.gather(self.schedule_loop(), self.settle_loop())
