@@ -23,12 +23,14 @@ class Strategy:
 
 
 # H5: weekend dump cluster A — locked 2026-05-07
-H5 = Strategy('H5', 'p_intra_60<0.445 & is_weekend==1', entry_offset_s=60, direction='DOWN')
+# 2026-05-16 rename: p_intra_60 → p_intra_60_up (direction-explicit schema, 触发条件不变)
+H5 = Strategy('H5', 'p_intra_60_up<0.445 & is_weekend==1', entry_offset_s=60, direction='DOWN')
 
-# H6: max-intra-120 extreme dump (all-day, no weekend filter) — locked 2026-05-07
-H6 = Strategy('H6', 'max_intra_120<0.4', entry_offset_s=120, direction='DOWN')
+# H6: max-intra-120 extreme dump — killed 2026-05-11 (factor_decisions id=1)
+# Paper n=43, net_ev -1.55%, entry drift +5.6¢ 吃光 alpha. Kept as artifact, not ACTIVE.
+H6 = Strategy('H6', 'max_intra_120_up<0.4', entry_offset_s=120, direction='DOWN')
 
-ACTIVE: tuple[Strategy, ...] = (H5, H6)
+ACTIVE: tuple[Strategy, ...] = (H5,)
 
 
 if __name__ == '__main__':

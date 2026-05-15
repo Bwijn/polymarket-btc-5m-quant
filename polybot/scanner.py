@@ -71,25 +71,31 @@ class Scanner:
             log.warning(f"[{strat.id}] cs={cs} market unparseable")
             return
 
-        # startTs=cs-3600 matches mining backfill — gives carry-forward fallback for the
-        # ~3.9% of candles with no trade in [cs, cs+60]. Without pre-market window,
-        # get_price_at returns None → NaN → fillna(False) → false miss vs mining's hit/miss.
-        ticks = await fetch_prices_history(m['up_token'], cs - 3600, cs + strat.entry_offset_s, fidelity=1)
-        if not ticks:
-            log.info(f"[{strat.id}] cs={cs} no ticks yet")
+        # 并发 fetch up + dn ticks. startTs=cs-3600 matches mining backfill — gives
+        # carry-forward fallback for the ~3.9% of candles with no trade in [cs, cs+60].
+        ticks_up, ticks_dn = await asyncio.gather(
+            fetch_prices_history(m['up_token'], cs - 3600, cs + strat.entry_offset_s, fidelity=1),
+            fetch_prices_history(m['down_token'], cs - 3600, cs + strat.entry_offset_s, fidelity=1),
+        )
+        if not ticks_up:
+            log.info(f"[{strat.id}] cs={cs} no up ticks yet")
             return
 
-        df = compute_row(strat.expr, ticks, cs)
+        df = compute_row(strat.expr, ticks_up, ticks_dn, cs)
         hit = bool(evaluate(strat.expr, df).iloc[0])
         self._evaluated.add((strat.id, cs))
         if not hit:
             return
 
-        p_up = get_price_at(ticks, strat.entry_offset_s, cs)
-        if p_up is None:
-            log.warning(f"[{strat.id}] cs={cs} HIT but p_up None — skip")
+        # Direction-correct entry_price_backtest: 不再 1-p flip, 用 direction 自己的 ticks
+        ticks_dir = ticks_up if strat.direction == 'UP' else ticks_dn
+        p_dir = get_price_at(ticks_dir, strat.entry_offset_s, cs)
+        if p_dir is None:
+            log.warning(f"[{strat.id}] cs={cs} HIT but p_{strat.direction.lower()} None — skip")
             return
-        entry_price_backtest = p_up if strat.direction == 'UP' else 1.0 - p_up
+        entry_price_backtest = p_dir
+        # p_up_at_entry: 保留作 audit 字段 (始终是 UP 价, 跨 strategy direction 通用基线)
+        p_up = get_price_at(ticks_up, strat.entry_offset_s, cs)
 
         # paper-side: live orderbook BOTH sides recorded for arb_gap analysis.
         # Entry price = our side's ask (taker BUY crosses spread).

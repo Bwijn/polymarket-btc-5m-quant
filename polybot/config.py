@@ -21,7 +21,7 @@ LOG_FILE  = "polybot.log"
 # Timer-driven schedule. Each (strategy, candle) gets one asyncio task that
 # precisely sleeps until cs+entry_offset+ENTRY_LAG_S. No polling for trigger
 # evaluation — wakeup is wall-clock-aligned to the strategy's entry moment.
-ENTRY_LAG_S       = 1         # past cs+entry_offset, give server 1s to expose 1-min sample
+ENTRY_LAG_S       = 0         # snap = wake + eval_RTT (HK→PM ~22ms p50). 0 → snap lands ~cs+offset, aligns with mining reference. Was 1 (legacy "wait for 1-min sample" — proven unnecessary).
 SETTLE_LAG_S      = 60        # wait past cs+300 before trying settle (resolution lag)
 SCHEDULE_REFRESH_S = 60       # rescan upcoming candles + register schedule tasks
 SETTLE_POLL_S     = 30        # poll open rows for settle

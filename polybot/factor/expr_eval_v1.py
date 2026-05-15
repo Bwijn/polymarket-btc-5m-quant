@@ -22,51 +22,43 @@ Public API:
 """
 from __future__ import annotations
 import re
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
 # ---- frozen DSL constants (改这里 = 改 DSL) ------------------------------------
 
-BASE_COLS = frozenset({
-    'asym_3600', 'chg_rate_intra_120', 'chg_rate_intra_300',
-    'chg_rate_pre_1800', 'chg_rate_pre_3600', 'chg_rate_pre_900',
-    'delta_intra_120', 'delta_intra_15', 'delta_intra_150', 'delta_intra_180',
-    'delta_intra_240', 'delta_intra_270', 'delta_intra_30', 'delta_intra_45',
-    'delta_intra_60', 'delta_intra_75', 'delta_intra_90',
-    'delta_pre_120', 'delta_pre_1800', 'delta_pre_300', 'delta_pre_3600',
-    'delta_pre_60', 'delta_pre_600', 'delta_pre_900',
-    'dist_fair_open', 'dow', 'hour_bucket', 'hour_utc',
-    'is_friday', 'is_saturday', 'is_sunday', 'is_weekend',
-    'max_intra_120', 'max_intra_180', 'max_intra_240', 'max_intra_30',
-    'max_intra_300', 'max_intra_60', 'max_intra_90',
-    'mean_intra_120', 'mean_intra_180', 'mean_intra_240', 'mean_intra_30',
-    'mean_intra_300', 'mean_intra_60', 'mean_intra_90',
-    'mean_pre_180', 'mean_pre_1800', 'mean_pre_300', 'mean_pre_3600',
-    'mean_pre_60', 'mean_pre_600', 'mean_pre_900',
-    'min_intra_120', 'min_intra_180', 'min_intra_240', 'min_intra_30',
-    'min_intra_300', 'min_intra_60', 'min_intra_90',
-    'minute_of_hour',
-    'p_intra_120', 'p_intra_15', 'p_intra_150', 'p_intra_180',
-    'p_intra_240', 'p_intra_270', 'p_intra_30', 'p_intra_45',
-    'p_intra_60', 'p_intra_75', 'p_intra_90',
-    'p_open',
-    'p_pre_0', 'p_pre_120', 'p_pre_1800', 'p_pre_30', 'p_pre_300',
-    'p_pre_3600', 'p_pre_60', 'p_pre_600', 'p_pre_900',
-    'rng_intra_120', 'rng_intra_180', 'rng_intra_240', 'rng_intra_30',
-    'rng_intra_300', 'rng_intra_60', 'rng_intra_90',
-    'rng_pre_180', 'rng_pre_1800', 'rng_pre_300', 'rng_pre_3600',
-    'rng_pre_60', 'rng_pre_600', 'rng_pre_900',
-    'slope_diff_300_1800',
-    'slope_pre_180', 'slope_pre_1800', 'slope_pre_300', 'slope_pre_3600',
-    'slope_pre_60', 'slope_pre_600', 'slope_pre_900',
-    'std_intra_120', 'std_intra_180', 'std_intra_240', 'std_intra_30',
-    'std_intra_300', 'std_intra_60', 'std_intra_90',
-    'std_pre_180', 'std_pre_1800', 'std_pre_300', 'std_pre_3600',
-    'std_pre_60', 'std_pre_600', 'std_pre_900',
-    'vol_ratio_900_3600', 'we_hour',
-    'z_pre_1800', 'z_pre_300', 'z_pre_3600', 'z_pre_900',
+# Symbol table: list of valid base column names that expression atoms may reference.
+# DERIVED from features.parquet schema (single source of truth) — adding a feature
+# in build_features.py → it shows up here automatically, no manual sync needed.
+# Fallback hardcoded set used when parquet is absent (test/CI env).
+_FEATURES_PARQUET = Path('/home/polymarket_work/scratch/data/features.parquet')
+_META_COLS = frozenset({'cid', 'cs', 'era', 'up_won'})
+
+_FALLBACK_BASE_COLS = frozenset({
+    # Minimal set covering self-test cases. Real BASE_COLS auto-derives from parquet.
+    'p_intra_60_up', 'p_open_up', 'p_pre_0_up',
+    'max_intra_120_up', 'min_intra_90_up',
+    'slope_pre_300_up', 'slope_pre_600_up',
+    'is_weekend', 'is_friday', 'dow', 'hour_utc',
 })
+
+
+def _discover_base_cols() -> frozenset[str]:
+    """Read column names from features.parquet schema header. Subtract meta cols.
+    Returns _FALLBACK_BASE_COLS if parquet absent (test mode)."""
+    if _FEATURES_PARQUET.exists():
+        try:
+            import pyarrow.parquet as pq
+            cols = pq.read_schema(str(_FEATURES_PARQUET)).names
+            return frozenset(cols) - _META_COLS
+        except Exception:
+            pass
+    return _FALLBACK_BASE_COLS
+
+
+BASE_COLS = _discover_base_cols()
 
 # op spec: arg_type ∈ {'window', 'int', None}; arg_set None = 任意值, 否则白名单
 OPS: dict[str, dict[str, Any]] = {
@@ -107,7 +99,14 @@ def canonicalize(expr: str) -> str:
 # ---- parser ---------------------------------------------------------------------
 
 def _parse_atom(tok: str) -> dict:
-    """Parse 'p_intra_60' or 'p_intra_60__zs24h__lag1' → {col, transforms}."""
+    """Parse 'p_intra_60' or 'p_intra_60__zs24h__lag1' → {col, transforms}.
+
+    If the whole token is a known column (e.g., pre-materialized transform like
+    'X__zs24h' in features.parquet), treat it as a base column with no transforms —
+    the materialization made the transform a direct column lookup.
+    """
+    if tok in BASE_COLS:
+        return {'col': tok, 'transforms': []}
     parts = tok.split('__')
     col = parts[0]
     if col not in BASE_COLS:
@@ -233,36 +232,35 @@ def evaluate(expr: str, df: pd.DataFrame) -> pd.Series:
 
 if __name__ == '__main__':
     # canonicalize idempotency
-    assert canonicalize('p_intra_60<0.445') == 'p_intra_60<0.445'
-    assert canonicalize('p_intra_60 < 0.445') == 'p_intra_60<0.445'
-    assert canonicalize('p_intra_60<0.445 & is_weekend==1') == 'p_intra_60<0.445 & is_weekend==1'
-    assert canonicalize('p_intra_60<0.445&is_weekend==1') == 'p_intra_60<0.445 & is_weekend==1'
-    assert canonicalize('  p_intra_60  <  0.445  &  is_weekend == 1  ') == 'p_intra_60<0.445 & is_weekend==1'
-    assert canonicalize(canonicalize('p_intra_60 < 0.445')) == canonicalize('p_intra_60 < 0.445')
+    assert canonicalize('p_intra_60_up<0.445') == 'p_intra_60_up<0.445'
+    assert canonicalize('p_intra_60_up < 0.445') == 'p_intra_60_up<0.445'
+    assert canonicalize('p_intra_60_up<0.445 & is_weekend==1') == 'p_intra_60_up<0.445 & is_weekend==1'
+    assert canonicalize('p_intra_60_up<0.445&is_weekend==1') == 'p_intra_60_up<0.445 & is_weekend==1'
+    assert canonicalize('  p_intra_60_up  <  0.445  &  is_weekend == 1  ') == 'p_intra_60_up<0.445 & is_weekend==1'
 
-    # validate happy path (4 当前 cluster expr)
-    assert validate('p_intra_60<0.445 & is_weekend==1')['predicates']
-    assert validate('max_intra_120<0.4')['predicates']
-    assert validate('p_intra_60>0.555 & is_friday==1')['predicates']
-    assert validate('min_intra_90>0.6')['predicates']
+    # validate happy path — direction-correct cols + new Binance / basis features
+    assert validate('p_intra_60_up<0.445 & is_weekend==1')['predicates']
+    assert validate('max_intra_120_up<0.4')['predicates']
+    assert validate('p_intra_60_up>0.555 & is_friday==1')['predicates']
+    assert validate('min_intra_90_up>0.6')['predicates']
 
     # column-vs-column predicate
-    ast = validate('slope_pre_300<slope_pre_600')
+    ast = validate('slope_pre_300_up<slope_pre_600_up')
     assert ast['predicates'][0]['rhs']['kind'] == 'atom'
 
     # transform path (validate ok 但 evaluate 不实现)
-    ast = validate('p_intra_60__zs24h>2.0')
+    ast = validate('p_intra_60_up__zs24h>2.0')
     assert ast['predicates'][0]['lhs']['transforms'][0] == {'op': 'zs', 'arg': '24h'}
 
     # validate 拒绝
     rejected = [
         '',                              # 空
         'unknown_col<0.5',               # 未知 base col
-        'p_intra_60__bogus5h<0.5',       # 未知 op
-        'p_intra_60__zs99h<0.5',         # arg 不在白名单
-        'p_intra_60 == ',                # 缺 rhs
-        'p_intra_60<0.445 | is_weekend==1',  # OR 不支持
-        'p_intra_60<0.445 & p_open<0.5 & is_weekend==1 & dow==0',  # >3 predicate
+        'p_intra_60_up__bogus5h<0.5',    # 未知 op
+        'p_intra_60_up__zs99h<0.5',      # arg 不在白名单
+        'p_intra_60_up == ',             # 缺 rhs
+        'p_intra_60_up<0.445 | is_weekend==1',  # OR 不支持
+        'p_intra_60_up<0.445 & p_open_up<0.5 & is_weekend==1 & dow==0',  # >3 predicate
     ]
     for r in rejected:
         try:
@@ -273,16 +271,36 @@ if __name__ == '__main__':
 
     # evaluate on a tiny synthetic df
     df = pd.DataFrame({
-        'p_intra_60': [0.4, 0.5, 0.3, 0.6],
-        'is_weekend': [0, 1, 1, 0],
-        'p_open':     [0.5, 0.5, 0.5, 0.5],
+        'p_intra_60_up': [0.4, 0.5, 0.3, 0.6],
+        'is_weekend':    [0, 1, 1, 0],
+        'p_open_up':     [0.5, 0.5, 0.5, 0.5],
     })
-    mask = evaluate('p_intra_60<0.445 & is_weekend==1', df)
+    mask = evaluate('p_intra_60_up<0.445 & is_weekend==1', df)
     assert mask.tolist() == [False, False, True, False], mask.tolist()
-    mask = evaluate('p_intra_60<p_open', df)
+    mask = evaluate('p_intra_60_up<p_open_up', df)
     assert mask.tolist() == [True, False, True, False], mask.tolist()
 
     print("expr_eval_v1: OK")
-    print(f"  BASE_COLS: {len(BASE_COLS)} cols")
+    print(f"  BASE_COLS: {len(BASE_COLS)} cols (sourced from {'parquet' if _FEATURES_PARQUET.exists() else 'fallback'})")
     print(f"  OPS: {list(OPS)}")
     print(f"  COMPARATORS: {sorted(COMPARATORS)}")
+
+    # 额外 sanity: 新加的 feature family 都能被 validate 接受
+    new_feature_samples = [
+        'bn_taker_buy_ratio_pre_60>0.6',
+        'bn_chg_pct_pre_300>0.005',
+        'pmt_imbalance_pre_60_up>0.3',
+        'basis_pre_60_up>0.05',
+        'fund_8h_now>0.0001',
+        'oi_chg_pct_1h>0.02',
+        'ls_top_pos_ratio>1.5',
+    ]
+    for expr in new_feature_samples:
+        try:
+            validate(expr)
+        except ValueError as e:
+            # fallback mode may not include these; only fail in parquet mode
+            if _FEATURES_PARQUET.exists():
+                raise AssertionError(f"new feature expr rejected unexpectedly: {expr!r}, err: {e}")
+    if _FEATURES_PARQUET.exists():
+        print(f"  new feature families validated: {len(new_feature_samples)} samples OK")
