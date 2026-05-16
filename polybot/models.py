@@ -77,3 +77,21 @@ class PaperTrade5mBinary(SQLModel, table=True):
     opened_at_s: int
     settled_at_s: int | None = None
     error_msg: str | None = None
+
+
+class FeatureHistory(SQLModel, table=True):
+    """Rolling buffer for stateful transforms (__zs24h / __zs7d / __rank24h).
+
+    Each paper trigger eval writes the current cs's base feature values here.
+    Transforms query past values from this table to compute z-score / rank.
+    PK (feature_name, cs) makes upsert idempotent across restarts.
+
+    Pruning: scanner periodically deletes rows older than 7d (keep enough for __zs7d).
+    Warm-start: backfilled from features.parquet on first deploy via
+    scratch/warmstart_feature_history.py.
+    """
+    __tablename__ = "feature_history"
+
+    feature_name: str = Field(primary_key=True)
+    cs: int = Field(primary_key=True)            # candle_start unix seconds
+    value: float | None = None                   # NULL = NaN (data gap)

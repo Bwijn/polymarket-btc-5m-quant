@@ -81,7 +81,9 @@ class Scanner:
             log.info(f"[{strat.id}] cs={cs} no up ticks yet")
             return
 
-        df = compute_row(strat.expr, ticks_up, ticks_dn, cs)
+        # engine=self.engine → compute_row 查/写 feature_history (transform 用).
+        # 无 transform 的 expr (e.g., H5) 不触发任何 db op, engine arg 无副作用.
+        df = compute_row(strat.expr, ticks_up, ticks_dn, cs, engine=self.engine)
         hit = bool(evaluate(strat.expr, df).iloc[0])
         self._evaluated.add((strat.id, cs))
         if not hit:

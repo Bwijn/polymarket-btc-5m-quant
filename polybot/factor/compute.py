@@ -37,6 +37,15 @@ INTRA_WINDOWS = [30, 60, 90, 120, 180, 240, 300]
 BN_PRE_WINDOWS_S = [60, 300, 900, 1800, 3600]
 BASIS_K = 2.0
 
+# Transform constants — must match build_features._build_transforms (line 489-491, 549-563).
+# Window = event count (events ~5min apart, so 288 ≈ 24h, 2016 ≈ 7d).
+# min_periods = mining 容忍下限 (50 ≈ ~4h coverage, 200 ≈ ~17h).
+TRANSFORM_SPEC = {
+    '__zs24h':   {'op': 'zs',   'window': 288,  'min_periods': 50},
+    '__zs7d':    {'op': 'zs',   'window': 2016, 'min_periods': 200},
+    '__rank24h': {'op': 'rank', 'window': 288,  'min_periods': 50},
+}
+
 
 # ── PM core helpers ──────────────────────────────────────────────────────────
 
@@ -291,6 +300,63 @@ def compute_basis_features(pm: dict, bn: dict) -> dict:
     return out
 
 
+# ── transform pure functions (stateless) ────────────────────────────────────
+
+def compute_zs(current: float, past_values: list[float], min_periods: int) -> float:
+    """Z-score of current relative to past_values. Matches pandas
+    rolling(window=W, min_periods=mp, closed='left').mean()/std() semantics:
+    - past_values excludes current (closed='left')
+    - drop NaN, need at least min_periods non-NaN
+    - std uses ddof=1 (pandas default sample std)
+    - returns NaN if std == 0 or insufficient data
+    """
+    if current is None or (isinstance(current, float) and math.isnan(current)):
+        return float('nan')
+    vals = [v for v in past_values if v is not None and not (isinstance(v, float) and math.isnan(v))]
+    if len(vals) < min_periods:
+        return float('nan')
+    mean = sum(vals) / len(vals)
+    variance = sum((v - mean) ** 2 for v in vals) / (len(vals) - 1)
+    std = variance ** 0.5
+    if std == 0:
+        return float('nan')
+    return (current - mean) / std
+
+
+def compute_rank(current: float, past_values: list[float], min_periods: int) -> float:
+    """Percentile rank of current within [past_values + current], pct=True,
+    method='average'. Matches pandas rolling(window=W, min_periods=mp).rank(pct=True).
+
+    Note: mining uses closed='right' (default) for rank, so current IS included in window.
+    We replicate by appending current to past_values for rank calc.
+    """
+    if current is None or (isinstance(current, float) and math.isnan(current)):
+        return float('nan')
+    vals = [v for v in past_values if v is not None and not (isinstance(v, float) and math.isnan(v))]
+    # pandas rank uses non-NaN count incl. current; min_periods checked against window's non-NaN
+    # count incl current. Equivalent: need len(vals) + 1 >= min_periods.
+    if len(vals) + 1 < min_periods:
+        return float('nan')
+    all_vals = vals + [current]
+    n = len(all_vals)
+    less  = sum(1 for v in all_vals if v < current)
+    equal = sum(1 for v in all_vals if v == current)
+    # method='average': tied ranks averaged. Ranks for tied group = (less+1)..(less+equal),
+    # average = less + (equal+1)/2.
+    avg_rank = less + (equal + 1) / 2
+    return avg_rank / n
+
+
+def parse_transform_col(col: str) -> tuple[str, dict] | None:
+    """If col ends with a known transform suffix (`__zs24h` etc.), return
+    (base, spec) where spec is {'op', 'window', 'min_periods'}. Else None.
+    """
+    for sfx, spec in TRANSFORM_SPEC.items():
+        if col.endswith(sfx) and len(col) > len(sfx):
+            return col[:-len(sfx)], spec
+    return None
+
+
 # ── self-test: syntax + minimal sanity (real equivalence in tests/) ─────────
 
 if __name__ == '__main__':
@@ -340,4 +406,34 @@ if __name__ == '__main__':
     b_nan = compute_basis_features(pm, {'bn_chg_pct_pre_60': 0.002, 'bn_rv_300': float('nan')})
     assert math.isnan(b_nan['basis_pre_60_up'])
 
-    print("compute: self-test OK (3 entry points + 2 helpers)")
+    # 5) compute_zs: 基本算 + min_periods + std=0
+    assert math.isnan(compute_zs(1.0, [1, 2, 3], min_periods=10))  # 不够
+    z = compute_zs(5.0, [1, 2, 3, 4], min_periods=3)
+    # mean=2.5, std ddof=1 = sqrt(5/3) ≈ 1.291, z = (5-2.5)/1.291 ≈ 1.936
+    assert abs(z - 1.9364916731037083) < 1e-9, z
+    assert math.isnan(compute_zs(5.0, [1, 1, 1, 1], min_periods=3))  # std=0
+    assert math.isnan(compute_zs(float('nan'), [1, 2, 3], min_periods=2))
+
+    # 6) compute_rank: 基本算 + ties + min_periods
+    # past=[1,2,3,2], current=2 → all_vals=[1,2,3,2,2] sorted=[1,2,2,2,3]
+    # less=1 (only 1<2), equal=3 (three 2s including current itself+two from past)
+    # avg_rank = 1 + (3+1)/2 = 3, pct = 3/5 = 0.6
+    r = compute_rank(2.0, [1.0, 2.0, 3.0, 2.0], min_periods=3)
+    assert abs(r - 0.6) < 1e-9, r
+    # 最低: current 比所有都小 → rank=1, pct=1/n
+    r = compute_rank(0.5, [1, 2, 3], min_periods=3)
+    assert abs(r - 0.25) < 1e-9, r   # less=0, equal=1, avg_rank=0+(1+1)/2=1, /4=0.25
+    # min_periods 不够
+    assert math.isnan(compute_rank(1.0, [2.0], min_periods=5))
+
+    # 7) parse_transform_col
+    assert parse_transform_col('delta_intra_60_dn__zs24h') == \
+        ('delta_intra_60_dn', TRANSFORM_SPEC['__zs24h'])
+    assert parse_transform_col('vol_ratio_900_3600_dn__zs7d') == \
+        ('vol_ratio_900_3600_dn', TRANSFORM_SPEC['__zs7d'])
+    assert parse_transform_col('bn_rv_1800__rank24h') == \
+        ('bn_rv_1800', TRANSFORM_SPEC['__rank24h'])
+    assert parse_transform_col('p_intra_60_up') is None       # no transform
+    assert parse_transform_col('__zs24h') is None             # empty base
+
+    print("compute: self-test OK (3 entry + 2 helpers + 3 transforms)")
