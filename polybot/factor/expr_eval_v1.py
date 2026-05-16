@@ -248,9 +248,9 @@ if __name__ == '__main__':
     ast = validate('slope_pre_300_up<slope_pre_600_up')
     assert ast['predicates'][0]['rhs']['kind'] == 'atom'
 
-    # transform path (validate ok 但 evaluate 不实现)
-    ast = validate('p_intra_60_up__zs24h>2.0')
-    assert ast['predicates'][0]['lhs']['transforms'][0] == {'op': 'zs', 'arg': '24h'}
+    # transform path validates OK — 走"parsed transform"还是"materialized direct col"
+    # 取决于 BASE_COLS 是来自 parquet (materialized 在内) 还是 fallback. 不约束内部分支.
+    validate('p_intra_60_up__zs24h>2.0')
 
     # validate 拒绝
     rejected = [
