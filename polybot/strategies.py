@@ -30,7 +30,22 @@ H5 = Strategy('H5', 'p_intra_60_up<0.445 & is_weekend==1', entry_offset_s=60, di
 # Paper n=43, net_ev -1.55%, entry drift +5.6¢ 吃光 alpha. Kept as artifact, not ACTIVE.
 H6 = Strategy('H6', 'max_intra_120_up<0.4', entry_offset_s=120, direction='DOWN')
 
-ACTIVE: tuple[Strategy, ...] = (H5,)
+
+# ─── paper_pick7_20260514 cherry-pick (V1 modeled / V2 OOS validated) ──────
+# Deploy order = infra increment from smallest. Each Strategy.id = 'R<rank>' where
+# rank refers to paper_candidates.rank in pm_btc5m.db (1-7 within this policy_tag).
+
+# R5: 第 1 个 deploy (PM intra + __rank24h transform 唯一外加需求 = feature_history runtime layer)
+# 5/14 mining: bt_nev=+4.99%, trig%=5.7%, wr=90.8%, mean_ep=0.83
+# 高 mean_ep → drift 风险大, paper 验真很重要
+R5 = Strategy(
+    'R5',
+    'delta_intra_90_dn<-0.27000001072883606 & delta_intra_60_dn__rank24h<0.5190972089767456',
+    entry_offset_s=90,
+    direction='UP',
+)
+
+ACTIVE: tuple[Strategy, ...] = (H5, R5)
 
 
 if __name__ == '__main__':

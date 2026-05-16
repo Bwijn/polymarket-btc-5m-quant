@@ -37,11 +37,40 @@ _FEATURES_PARQUET = Path('/home/polymarket_work/scratch/data/features.parquet')
 _META_COLS = frozenset({'cid', 'cs', 'era', 'up_won'})
 
 _FALLBACK_BASE_COLS = frozenset({
-    # Minimal set covering self-test cases. Real BASE_COLS auto-derives from parquet.
+    # VPS runs in fallback mode (no features.parquet — scratch/ never deployed).
+    # Must contain every col any ACTIVE strategy expr references, INCLUDING
+    # materialized transform names (parquet pre-materializes col__zs24h etc. as
+    # direct cols, paper-time follows same convention to keep parse_transform_col +
+    # df[col] lookup working identically across modes).
+    #
+    # Update when adding new candidates to strategies.py ACTIVE.
+
+    # legacy (H5/H6, kept for self-tests)
     'p_intra_60_up', 'p_open_up', 'p_pre_0_up',
     'max_intra_120_up', 'min_intra_90_up',
     'slope_pre_300_up', 'slope_pre_600_up',
     'is_weekend', 'is_friday', 'dow', 'hour_utc',
+
+    # 7 paper_pick7_20260514 candidates: base features
+    'delta_intra_60_dn', 'delta_intra_75_dn', 'delta_intra_90_dn',
+    'min_intra_90_dn',
+    'vol_ratio_900_3600_dn', 'slope_pre_60_dn',
+    'bn_rv_1800',
+    'bn_taker_buy_ratio_pre_60', 'bn_taker_buy_ratio_pre_300',
+    'bn_vol_zscore_pre_60',
+    'basis_pre_60_up',
+
+    # 7 candidates: materialized transform names (these are direct df cols in
+    # parquet mode; same convention applies in fallback so parse_transform_col
+    # decomposes them at compute time)
+    'delta_intra_60_dn__rank24h',
+    'vol_ratio_900_3600_dn__zs24h',
+    'slope_pre_60_dn__rank24h',
+    'bn_rv_1800__rank24h',
+    'bn_vol_zscore_pre_60__zs24h',
+    'bn_vol_zscore_pre_60__zs7d',
+    'bn_vol_zscore_pre_60__rank24h',
+    'basis_pre_60_up__zs7d',
 })
 
 
