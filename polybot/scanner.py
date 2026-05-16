@@ -25,9 +25,10 @@ from models import PaperTrade5mBinary, TradeStatus, Direction
 from strategies import ACTIVE, Strategy
 from factor.expr_eval_v1 import evaluate
 from factor.entry_price import get_price_at
-from factor.features import compute_row
+from factor.features import compute_row, needs_klines
 from pm_api import slug_for, fetch_event, parse_market, fetch_prices_history
 from pm_ws import BookCache
+from bn_api import fetch_klines
 
 log = logging.getLogger("polybot.scanner")
 
@@ -71,19 +72,29 @@ class Scanner:
             log.warning(f"[{strat.id}] cs={cs} market unparseable")
             return
 
-        # 并发 fetch up + dn ticks. startTs=cs-3600 matches mining backfill — gives
-        # carry-forward fallback for the ~3.9% of candles with no trade in [cs, cs+60].
-        ticks_up, ticks_dn = await asyncio.gather(
-            fetch_prices_history(m['up_token'], cs - 3600, cs + strat.entry_offset_s, fidelity=1),
+        # 并发 fetch: PM up + dn ticks (always) + Binance klines (only if expr needs).
+        # startTs=cs-3600 matches mining backfill — carry-forward fallback for the ~3.9%
+        # of candles with no trade in [cs, cs+60].
+        need_klines = needs_klines(strat.expr)
+        fetches = [
+            fetch_prices_history(m['up_token'],   cs - 3600, cs + strat.entry_offset_s, fidelity=1),
             fetch_prices_history(m['down_token'], cs - 3600, cs + strat.entry_offset_s, fidelity=1),
-        )
+        ]
+        if need_klines:
+            fetches.append(fetch_klines(cs - 3600, cs))
+        results = await asyncio.gather(*fetches)
+        ticks_up, ticks_dn = results[0], results[1]
+        klines = results[2] if need_klines else None
         if not ticks_up:
             log.info(f"[{strat.id}] cs={cs} no up ticks yet")
+            return
+        if need_klines and (klines is None or klines.empty):
+            log.warning(f"[{strat.id}] cs={cs} Binance klines fetch empty — skip")
             return
 
         # engine=self.engine → compute_row 查/写 feature_history (transform 用).
         # 无 transform 的 expr (e.g., H5) 不触发任何 db op, engine arg 无副作用.
-        df = compute_row(strat.expr, ticks_up, ticks_dn, cs, engine=self.engine)
+        df = compute_row(strat.expr, ticks_up, ticks_dn, cs, engine=self.engine, klines=klines)
         hit = bool(evaluate(strat.expr, df).iloc[0])
         self._evaluated.add((strat.id, cs))
         if not hit:

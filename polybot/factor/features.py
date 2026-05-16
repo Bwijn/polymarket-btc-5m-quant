@@ -22,7 +22,8 @@ from __future__ import annotations
 import pandas as pd
 from sqlmodel import Session, select
 
-from .compute import compute_pm_features, compute_zs, compute_rank, parse_transform_col
+from .compute import (compute_pm_features, compute_bn_features, compute_basis_features,
+                      compute_zs, compute_rank, parse_transform_col)
 from .expr_eval_v1 import validate
 
 # Resolve FeatureHistory across two import contexts:
@@ -34,13 +35,31 @@ except ImportError:
     from models import FeatureHistory  # type: ignore
 
 
-def compute_row(expr: str, ticks_up, ticks_dn, cs: int, engine=None) -> pd.DataFrame:
+def needs_klines(expr: str) -> bool:
+    """True if expr references bn_* or basis_* (directly or via transform base)."""
+    ast = validate(expr)
+    cols = set()
+    for p in ast['predicates']:
+        cols.add(p['lhs']['col'])
+        if p['rhs']['kind'] == 'atom':
+            cols.add(p['rhs']['col'])
+    # Resolve transform cols to their base, then check prefix
+    all_bases = set()
+    for c in cols:
+        info = parse_transform_col(c)
+        all_bases.add(info[0] if info else c)
+    return any(b.startswith('bn_') or b.startswith('basis_') for b in all_bases)
+
+
+def compute_row(expr: str, ticks_up, ticks_dn, cs: int, engine=None, klines=None) -> pd.DataFrame:
     """1-row DataFrame with columns = base_cols referenced by expr.
 
     ticks_up: list of {t, p} from PM /prices-history(up_token)
     ticks_dn: list of {t, p} from PM /prices-history(down_token)
     cs:       candle_start (unix seconds)
     engine:   SQLAlchemy engine for polybot.db. Required for transform atoms.
+    klines:   pandas DataFrame indexed by ts (1-min Binance klines covering
+              [cs-3600, cs]). Required if expr has bn_* or basis_* atoms.
     """
     ast = validate(expr)
     needed_cols = set()
@@ -70,20 +89,39 @@ def compute_row(expr: str, ticks_up, ticks_dn, cs: int, engine=None) -> pd.DataF
             transform_cols.append((c, base, spec))
             bases_to_record.add(base)
 
-    # Validate all bases exist in PM family
+    # If expr atoms touch bn_/basis_ (directly or as transform base), compute those
+    # families now and merge into the feature lookup. Otherwise skip — PM-only path.
+    all_atom_bases = set(plain_cols) | bases_to_record
+    need_bn    = any(b.startswith('bn_')    for b in all_atom_bases)
+    need_basis = any(b.startswith('basis_') for b in all_atom_bases)
+
+    bn = {}
+    basis_d = {}
+    if need_bn or need_basis:
+        if klines is None or klines.empty:
+            raise NotImplementedError(
+                f"expr references bn_/basis but klines DataFrame not provided "
+                f"(scanner must fetch Binance klines for active strategies needing them).")
+        bn = compute_bn_features(klines, cs)
+        if need_basis:
+            basis_d = compute_basis_features(pm, bn)
+
+    all_features = {**pm, **bn, **basis_d}
+
+    # Validate all bases exist in computed family set
     for c in plain_cols:
-        if c not in pm:
+        if c not in all_features:
             raise NotImplementedError(
-                f"feature {c!r} not in PM family: needs Binance/basis wiring (scanner "
-                f"doesn't fetch klines yet) — next infra task.")
+                f"feature {c!r} not found in pm/bn/basis families. "
+                f"Possibly: missing transforms suffix? Unknown feature?")
     for _, base, _ in transform_cols:
-        if base not in pm:
+        if base not in all_features:
             raise NotImplementedError(
-                f"transform base {base!r} not in PM family: needs Binance/basis wiring.")
+                f"transform base {base!r} not found in pm/bn/basis families.")
 
     row = {}
     for c in plain_cols:
-        row[c] = pm[c]
+        row[c] = all_features[c]
 
     if transform_cols:
         if engine is None:
@@ -108,7 +146,7 @@ def compute_row(expr: str, ticks_up, ticks_dn, cs: int, engine=None) -> pd.DataF
                 base_past[base] = past
 
             for full_col, base, spec in transform_cols:
-                current = pm[base]
+                current = all_features[base]
                 past = base_past[base]
                 op = spec['op']
                 mp = spec['min_periods']
@@ -123,7 +161,7 @@ def compute_row(expr: str, ticks_up, ticks_dn, cs: int, engine=None) -> pd.DataF
     if engine is not None and bases_to_record:
         with Session(engine) as session:
             for base in bases_to_record:
-                val = pm[base]
+                val = all_features[base]
                 # SQLite null for NaN to keep numeric ops clean downstream
                 val_db = None if (val != val) else float(val)  # NaN check via self-ne
                 existing = session.get(FeatureHistory, (base, cs))
@@ -219,12 +257,36 @@ if __name__ == '__main__':
         except (NotImplementedError, ValueError):
             pass
 
-    # Bn / basis 还是 raise (这个 task 不解决)
-    for bad in ('bn_chg_pct_pre_300>0', 'basis_pre_60_up>0'):
+    # bn_ / basis_ 无 klines → raise; 有 klines → 算
+    for bn_expr in ('bn_chg_pct_pre_300>0', 'basis_pre_60_up>0'):
         try:
-            compute_row(bad, ticks_up, ticks_dn, cs)
-            raise AssertionError(f"should have raised: {bad!r}")
+            compute_row(bn_expr, ticks_up, ticks_dn, cs)
+            raise AssertionError(f"should have raised (no klines): {bn_expr!r}")
         except NotImplementedError:
             pass
 
-    print("features: OK (transforms via feature_history + history writes idempotent)")
+    # needs_klines helper
+    assert needs_klines('bn_chg_pct_pre_300>0') is True
+    assert needs_klines('basis_pre_60_up>0') is True
+    assert needs_klines('bn_vol_zscore_pre_60__zs24h>0') is True   # transform on bn base
+    assert needs_klines('basis_pre_60_up__zs7d<0') is True
+    assert needs_klines('p_intra_60_up<0.445 & is_weekend==1') is False
+    assert needs_klines('delta_intra_60_dn__rank24h<0.5') is False
+
+    # With synthetic klines, bn_ atom returns a value (not raise)
+    import pandas as pd
+    import numpy as np
+    ts_grid = list(range(cs - 3600, cs, 60))
+    fake_klines = pd.DataFrame({
+        'open':  [0.5] * len(ts_grid),
+        'high':  [0.6] * len(ts_grid),
+        'low':   [0.4] * len(ts_grid),
+        'close': [0.55] * len(ts_grid),
+        'volume':           [100.0] * len(ts_grid),
+        'quote_volume':     [55.0] * len(ts_grid),
+        'taker_buy_volume': [70.0] * len(ts_grid),
+    }, index=pd.Index(ts_grid, name='ts'))
+    df = compute_row('bn_taker_buy_ratio_pre_60>0.5', ticks_up, ticks_dn, cs, klines=fake_klines)
+    assert df.iloc[0]['bn_taker_buy_ratio_pre_60'] == 0.7  # 70/100
+
+    print("features: OK (transforms + bn_/basis_ via klines + history idempotent)")

@@ -59,7 +59,40 @@ R2 = Strategy(
     direction='UP',
 )
 
-ACTIVE: tuple[Strategy, ...] = (H5, R5, R1, R2)
+# R4: bn_taker + bn_vol_zscore__zs24h. bt_nev=+7.53%, trig=4.0%, wr=63.1%, mean_ep=0.51 (drift-safe)
+R4 = Strategy(
+    'R4',
+    'bn_taker_buy_ratio_pre_300>0.7554713487625122 & bn_vol_zscore_pre_60__zs24h>0.3679429590702057',
+    entry_offset_s=0,
+    direction='DOWN',
+)
+
+# R7: bn_taker_60 + bn_vol_zscore__rank24h. bt_nev=+6.54%, trig=4.2%, wr=61.5%, mean_ep=0.50 (drift-safe)
+R7 = Strategy(
+    'R7',
+    'bn_taker_buy_ratio_pre_60>0.8810144662857056 & bn_vol_zscore_pre_60__rank24h>0.8125',
+    entry_offset_s=0,
+    direction='DOWN',
+)
+
+# R3: min_intra_up + bn_rv_1800__rank24h. bt_nev=+6.56%, trig=4.7%, wr=92.2%, mean_ep=0.83 (drift 风险)
+R3 = Strategy(
+    'R3',
+    'min_intra_90_up<0.22499999403953552 & bn_rv_1800__rank24h>0.2291666716337204',
+    entry_offset_s=90,
+    direction='DOWN',
+)
+
+# R6: basis_pre__zs7d + bn_vol_zscore__zs7d. bt_nev=+6.79%, trig=4.1%, wr=62.5%, mean_ep=0.52 (drift-safe)
+# 跨数据源 (PM × Binance basis) + 唯一用 __zs7d 的 candidate
+R6 = Strategy(
+    'R6',
+    'basis_pre_60_up__zs7d<-1.564877986907959 & bn_vol_zscore_pre_60__zs7d>0.4064948856830597',
+    entry_offset_s=0,
+    direction='DOWN',
+)
+
+ACTIVE: tuple[Strategy, ...] = (H5, R5, R1, R2, R4, R7, R3, R6)
 
 
 if __name__ == '__main__':
