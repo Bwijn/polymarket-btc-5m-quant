@@ -138,10 +138,13 @@ class WsBookManager:
             assets.extend(nxt)
             self._subbed_cs.add(cs_next)
             self._cs_tokens[cs_next] = nxt
+        # level=3: throttles per-tick book updates (price_change events go from
+        # ~210/s → ~40/s), keeping best_bid/best_ask field freshness intact.
+        # Empirically verified to cut RX bandwidth ~6.6x (probe_ws_level.py).
         await ws.send(json.dumps({
-            "type": "market", "assets_ids": assets, "initial_dump": True,
+            "type": "market", "assets_ids": assets, "initial_dump": True, "level": 3,
         }))
-        log.info(f"ws initial sub cs={cs}+next ({len(assets)} assets)")
+        log.info(f"ws initial sub cs={cs}+next ({len(assets)} assets, level=3)")
         return True
 
     async def _maintain_subs(self, ws) -> None:
@@ -157,7 +160,7 @@ class WsBookManager:
             if tokens is None:
                 continue
             await ws.send(json.dumps({
-                "operation": "subscribe", "assets_ids": list(tokens),
+                "operation": "subscribe", "assets_ids": list(tokens), "level": 3,
             }))
             self._subbed_cs.add(cs)
             self._cs_tokens[cs] = tokens
