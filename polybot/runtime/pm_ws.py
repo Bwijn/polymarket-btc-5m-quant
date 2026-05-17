@@ -78,9 +78,12 @@ class BookCache:
 class WsBookManager:
     """One ws connection. Reconnects on close. Resubscribes when candle rolls.
 
-    Sub list = (UP, DOWN) tokens of the *current* 5min candle. We don't pre-sub
-    next candle because the trigger eval window for next is still 60-120s away
-    when current candle is 0-300s — plenty of time to reconnect.
+    Sub list = (UP, DOWN) tokens of the *current* AND *next* 5min candle.
+    Pre-subscribing next gives ~5min lead time for book_cache to fill before
+    that candle becomes current — critical for entry_offset_s=0 strategies
+    (R4/R6/R7) which trigger at exactly cs and need a warm book_cache snapshot.
+    Without pre-sub, ws connect+resolve+first-message latency causes
+    entry_price_paper=NULL for ~80% of et=0s triggers.
     """
 
     def __init__(self, cache: BookCache):
@@ -133,20 +136,28 @@ class WsBookManager:
         last_cs = None
         while True:
             cs = (int(time.time()) // 300) * 300
-            tokens = await self._resolve_tokens(cs)
-            if tokens is None:
+            cs_next = cs + 300
+            cur_tokens  = await self._resolve_tokens(cs)
+            if cur_tokens is None:
                 await asyncio.sleep(2)
                 continue
+            # Pre-sub next: tolerated if not yet created on PM (returns None → skip).
+            next_tokens = await self._resolve_tokens(cs_next)
+
+            assets = list(cur_tokens)
+            if next_tokens is not None:
+                assets.extend(next_tokens)
 
             try:
                 if cs != last_cs:
-                    log.info(f"ws sub cs={cs} up={tokens[0][:8]}.. down={tokens[1][:8]}..")
+                    pre = f" +next={next_tokens[0][:8]}../{next_tokens[1][:8]}.." if next_tokens else " (next not yet on PM)"
+                    log.info(f"ws sub cs={cs} cur={cur_tokens[0][:8]}../{cur_tokens[1][:8]}..{pre}")
                     last_cs = cs
 
                 async with websockets.connect(WSS_URL, open_timeout=10, close_timeout=5) as ws:
                     await ws.send(json.dumps({
                         "type": "market",
-                        "assets_ids": list(tokens),
+                        "assets_ids": assets,
                         "initial_dump": True,
                     }))
                     backoff_idx = 0  # successful connect resets backoff
