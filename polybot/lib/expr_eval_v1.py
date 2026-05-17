@@ -22,72 +22,17 @@ Public API:
 """
 from __future__ import annotations
 import re
-from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
 # ---- frozen DSL constants (改这里 = 改 DSL) ------------------------------------
 
-# Symbol table: list of valid base column names that expression atoms may reference.
-# DERIVED from features.parquet schema (single source of truth) — adding a feature
-# in build_features.py → it shows up here automatically, no manual sync needed.
-# Fallback hardcoded set used when parquet is absent (test/CI env).
-_FEATURES_PARQUET = Path('/home/polymarket_work/scratch/data/features.parquet')
-_META_COLS = frozenset({'cid', 'cs', 'era', 'up_won'})
-
-_FALLBACK_BASE_COLS = frozenset({
-    # VPS runs in fallback mode (no features.parquet — scratch/ never deployed).
-    # Must contain every col any ACTIVE strategy expr references, INCLUDING
-    # materialized transform names (parquet pre-materializes col__zs24h etc. as
-    # direct cols, paper-time follows same convention to keep parse_transform_col +
-    # df[col] lookup working identically across modes).
-    #
-    # Update when adding new candidates to strategies.py ACTIVE.
-
-    # legacy (H5/H6, kept for self-tests)
-    'p_intra_60_up', 'p_open_up', 'p_pre_0_up',
-    'max_intra_120_up', 'min_intra_90_up',
-    'slope_pre_300_up', 'slope_pre_600_up',
-    'is_weekend', 'is_friday', 'dow', 'hour_utc',
-
-    # 7 paper_pick7_20260514 candidates: base features
-    'delta_intra_60_dn', 'delta_intra_75_dn', 'delta_intra_90_dn',
-    'min_intra_90_dn',
-    'vol_ratio_900_3600_dn', 'slope_pre_60_dn',
-    'bn_rv_1800',
-    'bn_taker_buy_ratio_pre_60', 'bn_taker_buy_ratio_pre_300',
-    'bn_vol_zscore_pre_60',
-    'basis_pre_60_up',
-
-    # 7 candidates: materialized transform names (these are direct df cols in
-    # parquet mode; same convention applies in fallback so parse_transform_col
-    # decomposes them at compute time)
-    'delta_intra_60_dn__rank24h',
-    'vol_ratio_900_3600_dn__zs24h',
-    'slope_pre_60_dn__rank24h',
-    'bn_rv_1800__rank24h',
-    'bn_vol_zscore_pre_60__zs24h',
-    'bn_vol_zscore_pre_60__zs7d',
-    'bn_vol_zscore_pre_60__rank24h',
-    'basis_pre_60_up__zs7d',
-})
-
-
-def _discover_base_cols() -> frozenset[str]:
-    """Read column names from features.parquet schema header. Subtract meta cols.
-    Returns _FALLBACK_BASE_COLS if parquet absent (test mode)."""
-    if _FEATURES_PARQUET.exists():
-        try:
-            import pyarrow.parquet as pq
-            cols = pq.read_schema(str(_FEATURES_PARQUET)).names
-            return frozenset(cols) - _META_COLS
-        except Exception:
-            pass
-    return _FALLBACK_BASE_COLS
-
-
-BASE_COLS = _discover_base_cols()
+# Symbol table: valid base column names that expression atoms may reference.
+# SSOT = features.parquet schema, materialized at codegen time into _base_cols.py
+# via `uv run python scratch/tools/gen_base_cols.py`. deploy.sh re-runs codegen
+# automatically before rsync (eliminates stale-fallback drift risk).
+from polybot.lib._base_cols import BASE_COLS
 
 # op spec: arg_type ∈ {'window', 'int', None}; arg_set None = 任意值, 否则白名单
 OPS: dict[str, dict[str, Any]] = {
@@ -310,26 +255,13 @@ if __name__ == '__main__':
     assert mask.tolist() == [True, False, True, False], mask.tolist()
 
     print("expr_eval_v1: OK")
-    print(f"  BASE_COLS: {len(BASE_COLS)} cols (sourced from {'parquet' if _FEATURES_PARQUET.exists() else 'fallback'})")
+    print(f"  BASE_COLS: {len(BASE_COLS)} cols (sourced from polybot.lib._base_cols, codegen SSOT)")
     print(f"  OPS: {list(OPS)}")
     print(f"  COMPARATORS: {sorted(COMPARATORS)}")
 
-    # 额外 sanity: 新加的 feature family 都能被 validate 接受
-    new_feature_samples = [
-        'bn_taker_buy_ratio_pre_60>0.6',
-        'bn_chg_pct_pre_300>0.005',
-        'pmt_imbalance_pre_60_up>0.3',
-        'basis_pre_60_up>0.05',
-        'fund_8h_now>0.0001',
-        'oi_chg_pct_1h>0.02',
-        'ls_top_pos_ratio>1.5',
-    ]
-    for expr in new_feature_samples:
-        try:
-            validate(expr)
-        except ValueError as e:
-            # fallback mode may not include these; only fail in parquet mode
-            if _FEATURES_PARQUET.exists():
-                raise AssertionError(f"new feature expr rejected unexpectedly: {expr!r}, err: {e}")
-    if _FEATURES_PARQUET.exists():
-        print(f"  new feature families validated: {len(new_feature_samples)} samples OK")
+    # 各 feature family 都能被 validate 接受 (assume codegen ran on full parquet)
+    for expr in ('bn_taker_buy_ratio_pre_60>0.6', 'bn_chg_pct_pre_300>0.005',
+                 'pmt_imbalance_pre_60_up>0.3', 'basis_pre_60_up>0.05',
+                 'fund_8h_now>0.0001', 'oi_chg_pct_1h>0.02', 'ls_top_pos_ratio>1.5'):
+        validate(expr)
+    print("  new feature families validated: 7 samples OK")
