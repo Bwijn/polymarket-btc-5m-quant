@@ -7,11 +7,12 @@ import logging
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+# Add parent dir to sys.path so `polybot.*` resolves as package.
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config import LOG_FILE, DB_FILE
-from pm_ws import BookCache, WsBookManager
-from scanner import Scanner
+from polybot.runtime.config import LOG_FILE, DB_FILE
+from polybot.runtime.pm_ws import BookCache, WsBookManager
+from polybot.runtime.scanner import Scanner
 
 logging.basicConfig(
     level=logging.INFO,

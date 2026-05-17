@@ -20,7 +20,7 @@ from typing import Optional
 import httpx
 import websockets
 
-from config import GAMMA_API, ASSET_PREFIX
+from polybot.runtime.config import GAMMA_API, ASSET_PREFIX
 
 log = logging.getLogger("polybot.pm_ws")
 

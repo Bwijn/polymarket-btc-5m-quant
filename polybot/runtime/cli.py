@@ -10,7 +10,7 @@ Usage:
 """
 import sys
 import sqlite3
-from config import DB_FILE
+from polybot.runtime.config import DB_FILE
 
 TABLE = "paper_trade_5m_binary"
 

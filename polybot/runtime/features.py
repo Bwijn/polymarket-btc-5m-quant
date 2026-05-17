@@ -22,17 +22,17 @@ from __future__ import annotations
 import pandas as pd
 from sqlmodel import Session, select
 
-from .compute import (compute_pm_features, compute_bn_features, compute_basis_features,
-                      compute_zs, compute_rank, parse_transform_col)
-from .expr_eval_v1 import validate
+from polybot.lib.compute import (compute_pm_features, compute_bn_features, compute_basis_features,
+                         compute_zs, compute_rank, parse_transform_col)
+from polybot.lib.expr_eval_v1 import validate
 
 # Resolve FeatureHistory across two import contexts:
-#   scanner runtime  (main.py inserts polybot/ as sys.path[0]) → 'from models import X'
-#   self-test / -m   (project root in sys.path)                → 'from polybot.models import X'
+#   scanner runtime  (main.py inserts polybot/ as sys.path[0]) → 'from runtime.models import X'
+#   pytest / -m run  (project root in sys.path)                → 'from polybot.runtime.models import X'
 try:
-    from polybot.models import FeatureHistory
+    from polybot.runtime.models import FeatureHistory
 except ImportError:
-    from models import FeatureHistory  # type: ignore
+    from runtime.models import FeatureHistory  # type: ignore
 
 
 def needs_klines(expr: str) -> bool:
@@ -179,7 +179,7 @@ if __name__ == '__main__':
     import tempfile
     from sqlmodel import SQLModel, create_engine
     # FeatureHistory already imported at module top (try/except)
-    from .expr_eval_v1 import evaluate
+    from polybot.lib.expr_eval_v1 import evaluate
 
     cs = 1771027200  # 2026-02-14 00:00 UTC Saturday
     ticks_up = [
@@ -225,7 +225,7 @@ if __name__ == '__main__':
         assert evaluate('delta_intra_60_up__rank24h>0.5', df).tolist() == [False]
 
         # Manually pre-seed history (simulating warm-start or accumulated paper data)
-        from polybot.models import FeatureHistory
+        # FeatureHistory already imported at module top (try/except)
         with Session(engine) as session:
             for i in range(60):  # 60 ≈ min_periods=50 ✓
                 session.add(FeatureHistory(

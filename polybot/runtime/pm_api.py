@@ -12,7 +12,7 @@ import json
 import logging
 import httpx
 from typing import Optional
-from config import GAMMA_API, CLOB_API, ASSET_PREFIX
+from polybot.runtime.config import GAMMA_API, CLOB_API, ASSET_PREFIX
 
 log = logging.getLogger("polybot.pm_api")
 

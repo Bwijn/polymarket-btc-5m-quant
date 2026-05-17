@@ -6,7 +6,7 @@ Mirrored from scratch/H5_*/strategy.py and scratch/H6_*/strategy.py
 """
 from __future__ import annotations
 from dataclasses import dataclass
-from factor.expr_eval_v1 import validate
+from polybot.lib.expr_eval_v1 import validate
 
 
 @dataclass(frozen=True)
