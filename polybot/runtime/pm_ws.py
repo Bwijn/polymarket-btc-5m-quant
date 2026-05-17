@@ -76,19 +76,30 @@ class BookCache:
 
 
 class WsBookManager:
-    """One ws connection. Reconnects on close. Resubscribes when candle rolls.
+    """ONE long-lived ws connection. Reconnect only on network error.
 
-    Sub list = (UP, DOWN) tokens of the *current* AND *next* 5min candle.
-    Pre-subscribing next gives ~5min lead time for book_cache to fill before
-    that candle becomes current — critical for entry_offset_s=0 strategies
-    (R4/R6/R7) which trigger at exactly cs and need a warm book_cache snapshot.
-    Without pre-sub, ws connect+resolve+first-message latency causes
-    entry_price_paper=NULL for ~80% of et=0s triggers.
+    Sub list = (UP, DOWN) tokens of the *current* AND *next* 5min candle, kept
+    fresh via PM ws updateSubscription protocol (operation=subscribe/unsubscribe
+    on the live connection, no disconnect). On candle roll:
+      - subscribe NEW next (new cs+300 market)
+      - unsubscribe OLD candle that has expired (cs < current)
+      - evict its BookCache entries (whitelist policy: cache mirrors active subs)
+
+    Why long-lived: previous design closed+reconnected every 5min on candle roll,
+    creating ~300-1500ms gap (2× HTTP resolve + 1× ws handshake) during which
+    book_cache returned stale snapshot → et=0s triggers (R4/R6/R7) recorded
+    systematically-biased entry_price_paper, polluting drift measurement.
+    Per PM ws docs (/api-reference/wss/market.md updateSubscription schema), sub
+    add/remove on live connection is supported zero-disconnect.
     """
 
     def __init__(self, cache: BookCache):
         self.cache = cache
         self._http = httpx.AsyncClient(timeout=8.0)
+        # State for the current ws session. Cleared on disconnect.
+        self._subbed_cs: set[int] = set()           # candle_starts currently subscribed
+        self._cs_tokens: dict[int, tuple[str, str]] = {}  # cs → (up_token, dn_token)
+        self._last_maintain_ts: int = 0             # throttle: don't HTTP-spam Gamma
 
     async def aclose(self):
         await self._http.aclose()
@@ -111,11 +122,75 @@ class WsBookManager:
             log.warning(f"parse tokens cs={cs}: {e}")
             return None
 
-    async def _listen(self, ws, cs_active: int) -> str:
-        """Read frames until candle rolls or connection breaks. Return reason."""
+    async def _initial_subscribe(self, ws) -> bool:
+        """Initial Subscribe with initial_dump=True. Returns False if no current
+        candle resolvable (caller retries)."""
+        cs = (int(time.time()) // 300) * 300
+        cs_next = cs + 300
+        cur = await self._resolve_tokens(cs)
+        if cur is None:
+            return False
+        nxt = await self._resolve_tokens(cs_next)
+        assets = list(cur)
+        self._subbed_cs.add(cs)
+        self._cs_tokens[cs] = cur
+        if nxt is not None:
+            assets.extend(nxt)
+            self._subbed_cs.add(cs_next)
+            self._cs_tokens[cs_next] = nxt
+        await ws.send(json.dumps({
+            "type": "market", "assets_ids": assets, "initial_dump": True,
+        }))
+        log.info(f"ws initial sub cs={cs}+next ({len(assets)} assets)")
+        return True
+
+    async def _maintain_subs(self, ws) -> None:
+        """Keep sub list = {current_cs, next_cs}. Add new, drop expired, evict
+        BookCache for evicted tokens (whitelist eviction = no cache leak)."""
+        now_cs = (int(time.time()) // 300) * 300
+        target = {now_cs, now_cs + 300}
+
+        for cs in (now_cs, now_cs + 300):
+            if cs in self._subbed_cs:
+                continue
+            tokens = await self._resolve_tokens(cs)
+            if tokens is None:
+                continue
+            await ws.send(json.dumps({
+                "operation": "subscribe", "assets_ids": list(tokens),
+            }))
+            self._subbed_cs.add(cs)
+            self._cs_tokens[cs] = tokens
+            log.info(f"ws +sub cs={cs}")
+
+        for cs in list(self._subbed_cs):
+            if cs in target:
+                continue
+            tokens = self._cs_tokens.pop(cs)
+            self._subbed_cs.discard(cs)
+            try:
+                await ws.send(json.dumps({
+                    "operation": "unsubscribe", "assets_ids": list(tokens),
+                }))
+            except Exception as e:
+                log.warning(f"unsub cs={cs} send err: {e}")
+            for tok in tokens:
+                self.cache._cache.pop(tok, None)
+            log.info(f"ws -sub cs={cs} (cache evicted)")
+
+    async def _listen_and_maintain(self, ws) -> None:
+        """Process incoming ws frames + maintain sub list per candle roll.
+        Maintenance is triggered when the current/next bucket isn't in our sub
+        set (i.e., candle just rolled), but throttled to ≤1/3s to avoid HTTP-
+        spamming Gamma when next candle isn't yet created on PM."""
         async for msg in ws:
-            if (int(time.time()) // 300) * 300 != cs_active:
-                return "candle_rolled"
+            now = int(time.time())
+            now_cs = (now // 300) * 300
+            stale = now_cs not in self._subbed_cs or (now_cs + 300) not in self._subbed_cs
+            if stale and now - self._last_maintain_ts >= 3:
+                self._last_maintain_ts = now
+                await self._maintain_subs(ws)
+
             try:
                 payload = json.loads(msg)
             except json.JSONDecodeError:
@@ -128,41 +203,20 @@ class WsBookManager:
                 elif et == 'book':
                     self.cache.update_from_book(e)
                 # ignore last_trade_price / tick_size_change
-        return "stream_ended"
 
     async def run_forever(self):
-        log.info("ws book manager started")
+        log.info("ws book manager started (long-lived, updateSubscription on roll)")
         backoff_idx = 0
-        last_cs = None
         while True:
-            cs = (int(time.time()) // 300) * 300
-            cs_next = cs + 300
-            cur_tokens  = await self._resolve_tokens(cs)
-            if cur_tokens is None:
-                await asyncio.sleep(2)
-                continue
-            # Pre-sub next: tolerated if not yet created on PM (returns None → skip).
-            next_tokens = await self._resolve_tokens(cs_next)
-
-            assets = list(cur_tokens)
-            if next_tokens is not None:
-                assets.extend(next_tokens)
-
             try:
-                if cs != last_cs:
-                    pre = f" +next={next_tokens[0][:8]}../{next_tokens[1][:8]}.." if next_tokens else " (next not yet on PM)"
-                    log.info(f"ws sub cs={cs} cur={cur_tokens[0][:8]}../{cur_tokens[1][:8]}..{pre}")
-                    last_cs = cs
-
                 async with websockets.connect(WSS_URL, open_timeout=10, close_timeout=5) as ws:
-                    await ws.send(json.dumps({
-                        "type": "market",
-                        "assets_ids": assets,
-                        "initial_dump": True,
-                    }))
-                    backoff_idx = 0  # successful connect resets backoff
-                    reason = await self._listen(ws, cs)
-                    log.info(f"ws closed cs={cs} reason={reason}")
+                    if not await self._initial_subscribe(ws):
+                        log.warning("initial subscribe failed (no current candle), retry 2s")
+                        await asyncio.sleep(2)
+                        continue
+                    backoff_idx = 0
+                    await self._listen_and_maintain(ws)
+                    log.info("ws stream ended cleanly (PM closed?), reconnecting")
             except (websockets.ConnectionClosed,
                     asyncio.TimeoutError, OSError) as e:
                 wait = RECONNECT_BACKOFF_S[min(backoff_idx, len(RECONNECT_BACKOFF_S) - 1)]
@@ -172,6 +226,11 @@ class WsBookManager:
             except Exception as e:
                 log.exception(f"ws unexpected: {e}")
                 await asyncio.sleep(2)
+            finally:
+                # State cleanup: next iteration will re-initial_subscribe from scratch
+                self._subbed_cs.clear()
+                self._cs_tokens.clear()
+                self._last_maintain_ts = 0
 
 
 # ---- self-test (live, 10s) --------------------------------------------------
