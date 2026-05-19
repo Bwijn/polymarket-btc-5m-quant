@@ -30,7 +30,9 @@ class PaperTrade5mBinary(SQLModel, table=True):
     PnL semantics for our side:
         win  → entry_price → 1.0   pnl_ratio = (1-entry)/entry
         loss → entry_price → 0.0   pnl_ratio = -1.0
-    Friction NOT applied here — recorded raw; deflate at report time.
+    pnl_ratio_paper / pnl_usd_paper are GROSS (pre-fee), kept gross so drift
+    vs backtest stays apples-to-apples. fee_usd + *_net columns hold the
+    fee-deducted view; friction algo SSOT = polybot/lib/friction.py.
     """
     __tablename__ = "paper_trade_5m_binary"
 
@@ -73,6 +75,11 @@ class PaperTrade5mBinary(SQLModel, table=True):
     pnl_ratio_drift: float | None = None      # paper - backtest
     pnl_usd_backtest: float | None = None
     pnl_usd_paper: float | None = None
+
+    # ---- net of PM taker fee (friction SSOT: polybot/lib/friction.py) ----
+    fee_usd: float | None = None                    # size_usd * fee_ratio(entry_price_paper)
+    pnl_usd_paper_net: float | None = None          # pnl_usd_paper - fee_usd
+    pnl_ratio_paper_net: float | None = None        # pnl_ratio_paper - fee_ratio(entry_price_paper)
 
     opened_at_s: int
     settled_at_s: int | None = None

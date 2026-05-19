@@ -25,6 +25,7 @@ from polybot.runtime.models import PaperTrade5mBinary, TradeStatus, Direction
 from polybot.strategies import ACTIVE, Strategy
 from polybot.lib.expr_eval_v1 import evaluate
 from polybot.lib.entry_price import get_price_at
+from polybot.lib.friction import paper_friction_ratio
 from polybot.runtime.features import compute_row, needs_klines
 from polybot.runtime.pm_api import slug_for, fetch_event, parse_market, fetch_prices_history
 from polybot.runtime.pm_ws import BookCache
@@ -177,8 +178,10 @@ class Scanner:
             pnl_ratio_bt = -1.0
         pnl_usd_bt = pnl_ratio_bt * row.size_usd
 
-        # paper pnl ratio (only if we captured book_ask at trigger)
+        # paper pnl ratio (only if we captured book_ask at trigger). Gross of fee;
+        # fee_usd / *_net columns below carry the friction-adjusted view.
         pnl_ratio_paper = pnl_usd_paper = pnl_ratio_drift = None
+        fee_usd = pnl_usd_paper_net = pnl_ratio_paper_net = None
         if row.entry_price_paper is not None and row.entry_price_paper > 0:
             if my_won:
                 pnl_ratio_paper = (1.0 - row.entry_price_paper) / row.entry_price_paper
@@ -186,6 +189,10 @@ class Scanner:
                 pnl_ratio_paper = -1.0
             pnl_usd_paper = pnl_ratio_paper * row.size_usd
             pnl_ratio_drift = pnl_ratio_paper - pnl_ratio_bt
+            fee_ratio = paper_friction_ratio(row.entry_price_paper)
+            fee_usd = row.size_usd * fee_ratio
+            pnl_usd_paper_net = pnl_usd_paper - fee_usd
+            pnl_ratio_paper_net = pnl_ratio_paper - fee_ratio
 
         with Session(self.engine) as s:
             db_row = s.get(PaperTrade5mBinary, row.id)
@@ -196,6 +203,9 @@ class Scanner:
             db_row.pnl_ratio_drift = pnl_ratio_drift
             db_row.pnl_usd_backtest = pnl_usd_bt
             db_row.pnl_usd_paper = pnl_usd_paper
+            db_row.fee_usd = fee_usd
+            db_row.pnl_usd_paper_net = pnl_usd_paper_net
+            db_row.pnl_ratio_paper_net = pnl_ratio_paper_net
             db_row.settled_at_s = int(time.time())
             s.add(db_row)
             s.commit()
