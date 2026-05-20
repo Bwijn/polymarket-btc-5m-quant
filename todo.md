@@ -1,26 +1,35 @@
 # Polybot TODO
 
-## NOW
+## NOW — Build Live Execution Layer
 
-- **KILL R1, R3** (overfit: paper wr 14-19pts < bt wr, p<0.01)
-  - factor_decisions row × 2
-  - strategies.py: ACTIVE = (H5, R2, R7) live + (R5, R6, R4) paper-only (加 per-strategy `live` flag)
-  - bash deploy.sh
+当前系统是纯 paper simulator, 零真钱下单代码 (config.py:1 "Live config loaded later").
+"上 live" = build 一个子系统, 不是翻开关.
 
-- **Live Phase 1 启动** ($34 wallet, 3 strategy each 5% Kelly = $1.70/trade)
-  - 加 KELLY_FRAC config: H5/R2/R7 = 0.05 (R2 ≈ half Kelly of f*≈9%, R7 ≈ quarter Kelly of f*≈24%)
-  - sizing 改成 `wallet × kelly_frac` 一行
-  - real-money switch 路径找出来打开 (config / wallet 校验)
-  - 监控 1 weekend + 1 weekday: drift_t / wr / fee / settle 是否正常
+- **先 align 设计决策** (动手前):
+  - private key 怎么管 (安全 — 错了直接丢钱)
+  - 官方 SDK: py-clob-client-v2 (CLAUDE.md 强制官方)
+  - 第一笔 live 最小化测试 ($1 PM min 验证全链路再上正常 size)
 
-## NEXT (Phase 1 通过后)
+- **Build 8 组件**:
+  1. 装 py-clob-client-v2
+  2. Credentials 加载 (private key / API key / funder address)
+  3. 下单: HIT → 签名 + 提交 CLOB taker BUY
+  4. Fill 处理: 成交确认 + 实际成交价 vs book_ask (真 drift)
+  5. Position 跟踪 (真实持仓, 不只 db row)
+  6. Redeem: market resolve 后领奖
+  7. Wallet 余额查询 (给 Kelly sizing)
+  8. Error handling (下单失败 / 网络 / 余额不足 / 被拒)
 
-- 充值 $100 → $134, sizing 自动 4x scale ($6.70/trade)
-- 继续 monitor 进 Phase 2
+- **Sizing 改造** (live 时): KELLY_FRAC config (H5/R2=0.05) + `wallet × kelly_frac` 动态 size, 取代 PAPER_SIZE_USD 固定值
+
+## NEXT (Live layer 建好 + Phase 1 验证通过后)
+
+- Phase 1: H5+R2 live on $34, 各 5% Kelly, 1 weekend+weekday 验证 drift/fee/settle
+- Phase 2: 充值 $100 → $134, sizing 自动 4x scale
 
 ## DECISIONS WAITING
 
-- **R5**: 边缘 KILL (EV -3.1% < floor -2.5%), 但 5/17→5/19 转正 (-1.6% → +4.3%). 5/16 大亏可能 outlier. 倾向 PENDING + watch 1 周 (live flag=False, 仅 paper)
+- **R7**: EV +20% 漂亮但 drift_t=-2.18 d_mean=-11% (drift 警报, leading indicator). paper-only watch, n→30 后: drift 持续 → KILL, drift 回正 → 考虑 live
 
 ## INFRASTRUCTURE (可跟 live 并行)
 

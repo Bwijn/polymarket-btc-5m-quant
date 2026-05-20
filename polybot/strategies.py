@@ -92,7 +92,9 @@ R6 = Strategy(
     direction='DOWN',
 )
 
-ACTIVE: tuple[Strategy, ...] = (H5, R5, R1, R2, R4, R7, R3, R6)
+# R1, R3, R5 killed 2026-05-20 (factor_decisions id 2/3/4): classifier overfit /
+# EV below floor. Definitions kept above for audit; dropped from ACTIVE.
+ACTIVE: tuple[Strategy, ...] = (H5, R2, R7, R4, R6)
 
 
 if __name__ == '__main__':
