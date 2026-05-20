@@ -6,9 +6,8 @@ dependencies = [
     "httpx",
     "sqlmodel",
     "pandas",
-    "websockets",       # PM CLOB market channel (book / price_change push)
-    # py-clob-client* deferred until live phase (paper does not place orders).
-    # When promoting to live, switch to py-clob-client-v2 (V1 cutover 2026-04-28).
+    "websockets",         # PM CLOB market channel (book / price_change push)
+    "py-clob-client-v2",  # live order placement (V1 cutover 2026-04-28, V2 only)
 ]
 
 [tool.pytest.ini_options]
