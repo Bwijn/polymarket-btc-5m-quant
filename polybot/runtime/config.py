@@ -40,7 +40,7 @@ ASSET_PREFIX      = "btc-updown-5m-"     # slug = ASSET_PREFIX + str(cs)
 # LiveExecutor init, private key never touched, no CLOB write API. Flip True
 # + redeploy (executor inits + L2 auth-checks once at startup) to arm live.
 # Per-strategy gate: Strategy.live must ALSO be True — both required to place.
-LIVE_ENABLED = False
+LIVE_ENABLED = True
 CHAIN_ID     = 137                                          # Polygon
 SIG_TYPE     = 1                                            # POLY_PROXY
 FUNDER       = "0x606970B1b66993A8E36C6CD41c1823317152f7ae" # proxy wallet (data-api verified)
