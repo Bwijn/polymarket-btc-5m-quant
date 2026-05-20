@@ -81,6 +81,19 @@ class PaperTrade5mBinary(SQLModel, table=True):
     pnl_usd_paper_net: float | None = None          # pnl_usd_paper - fee_usd
     pnl_ratio_paper_net: float | None = None        # pnl_ratio_paper - fee_ratio(entry_price_paper)
 
+    # ---- live track: real order on PM CLOB (only when Strategy.live + LIVE_ENABLED) ----
+    order_id: str | None = None
+    real_status: str | None = None           # placing / matched / delayed / failed
+    tx_hash: str | None = None
+    real_size_usd: float | None = None       # makingAmount — USDC paid for shares (ex-fee)
+    real_fill_price: float | None = None     # makingAmount / takingAmount
+    real_shares: float | None = None         # takingAmount — held until redeem
+    real_fee_usd: float | None = None        # real_size_usd * fee_ratio(real_fill_price)
+    pnl_usd_live: float | None = None        # gross, at resolution
+    pnl_usd_live_net: float | None = None    # pnl_usd_live - real_fee_usd
+    pnl_ratio_live: float | None = None
+    pnl_ratio_drift_live: float | None = None  # pnl_ratio_live - pnl_ratio_paper
+
     opened_at_s: int
     settled_at_s: int | None = None
     error_msg: str | None = None

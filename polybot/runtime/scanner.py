@@ -20,8 +20,10 @@ from typing import Optional
 from sqlmodel import Session, select, SQLModel, create_engine
 
 from polybot.runtime.config import (DB_FILE, ENTRY_LAG_S, SETTLE_LAG_S, PAPER_SIZE_USD,
-                            SCHEDULE_REFRESH_S, SETTLE_POLL_S)
+                            SCHEDULE_REFRESH_S, SETTLE_POLL_S,
+                            LIVE_ENABLED, KELLY_FRAC, LIVE_MIN_USD, LIVE_SLIPPAGE_CAP)
 from polybot.runtime.models import PaperTrade5mBinary, TradeStatus, Direction
+from polybot.runtime.live_exec import LiveExecutor, LiveFill
 from polybot.strategies import ACTIVE, Strategy
 from polybot.lib.expr_eval_v1 import evaluate
 from polybot.lib.entry_price import get_price_at
@@ -46,6 +48,8 @@ class Scanner:
     def __init__(self, db_path: str = DB_FILE, book_cache: BookCache | None = None):
         self.engine = _engine(db_path)
         self.book_cache = book_cache or BookCache()
+        # LiveExecutor only when armed — None ⇒ pure paper, no key/network touched.
+        self.live = LiveExecutor() if LIVE_ENABLED else None
         # _evaluated: (strategy_id, cs) we've already eval'd (hit or miss).
         # _scheduled: (strategy_id, cs) we've already created an asyncio task for.
         # DB is SSOT for hits; sets are ephemeral — restart re-seeds from DB.
@@ -157,6 +161,67 @@ class Scanner:
                  f"drift={f'{drift:+.3f}' if drift is not None else 'n/a'} "
                  f"size=${PAPER_SIZE_USD:.2f} #{row.id}")
 
+        # live track: place the real order for promoted strategies. Paper row is
+        # already committed above — a live failure never touches the paper track.
+        if self.live is not None and strat.live:
+            await self._place_live(row.id, strat, m, entry_price_paper)
+
+    # ---- live order placement ----------------------------------------------
+    async def _place_live(self, row_id: int, strat: Strategy, m: dict,
+                          entry_price_paper: float | None) -> None:
+        """Place the real order for a live-strategy HIT (architecture A: same
+        row as the paper trade). size = wallet_usdc × KELLY_FRAC[id]."""
+        if entry_price_paper is None:
+            log.warning(f"[{strat.id}] #{row_id} no book snapshot — skip live")
+            return
+        kelly = KELLY_FRAC.get(strat.id)
+        if kelly is None:
+            log.error(f"[{strat.id}] #{row_id} live=True but no KELLY_FRAC — skip")
+            return
+        token = m['up_token'] if strat.direction == 'UP' else m['down_token']
+        try:
+            balance = await asyncio.to_thread(self.live.wallet_usdc)
+        except Exception as e:
+            log.exception(f"[{strat.id}] #{row_id} balance query failed: {e}")
+            return
+        size = round(balance * kelly, 2)
+        if size < LIVE_MIN_USD:
+            log.warning(f"[{strat.id}] #{row_id} size ${size:.2f} < ${LIVE_MIN_USD} "
+                        f"(wallet ${balance:.2f}) — skip live")
+            return
+        price_limit = min(0.99, round(entry_price_paper + LIVE_SLIPPAGE_CAP, 2))
+        self._set_live_status(row_id, "placing")        # crash-recovery breadcrumb
+        fill = await asyncio.to_thread(self.live.buy, token, size, price_limit)
+        self._record_live(row_id, fill)
+        if fill.success:
+            log.info(f"[{strat.id}] #{row_id} LIVE BUY ${fill.usdc_paid:.2f} "
+                     f"@ {fill.fill_price:.3f} ({fill.shares:.1f}sh) {fill.order_id}")
+        else:
+            log.error(f"[{strat.id}] #{row_id} LIVE order failed: {fill.error_msg}")
+
+    def _set_live_status(self, row_id: int, status: str) -> None:
+        with Session(self.engine) as s:
+            r = s.get(PaperTrade5mBinary, row_id)
+            r.real_status = status
+            s.add(r)
+            s.commit()
+
+    def _record_live(self, row_id: int, fill: LiveFill) -> None:
+        with Session(self.engine) as s:
+            r = s.get(PaperTrade5mBinary, row_id)
+            r.real_status = fill.status
+            r.order_id = fill.order_id
+            r.tx_hash = fill.tx_hash
+            if fill.success:
+                r.real_size_usd = fill.usdc_paid
+                r.real_shares = fill.shares
+                r.real_fill_price = fill.fill_price
+                r.real_fee_usd = fill.usdc_paid * paper_friction_ratio(fill.fill_price)
+            else:
+                r.error_msg = fill.error_msg
+            s.add(r)
+            s.commit()
+
     # ---- settle -------------------------------------------------------------
     async def settle_one(self, row: PaperTrade5mBinary) -> None:
         ev = await fetch_event(row.slug)
@@ -194,6 +259,17 @@ class Scanner:
             pnl_usd_paper_net = pnl_usd_paper - fee_usd
             pnl_ratio_paper_net = pnl_ratio_paper - fee_ratio
 
+        # live track pnl (only if a real order filled). Winning live pnl is the
+        # economic truth at resolution; converting shares→USDC needs redeem.
+        pnl_ratio_live = pnl_usd_live = pnl_usd_live_net = pnl_ratio_drift_live = None
+        if row.real_fill_price and row.real_fill_price > 0 and row.real_size_usd:
+            pnl_ratio_live = ((1.0 - row.real_fill_price) / row.real_fill_price
+                              if my_won else -1.0)
+            pnl_usd_live = pnl_ratio_live * row.real_size_usd
+            pnl_usd_live_net = pnl_usd_live - (row.real_fee_usd or 0.0)
+            if pnl_ratio_paper is not None:
+                pnl_ratio_drift_live = pnl_ratio_live - pnl_ratio_paper
+
         with Session(self.engine) as s:
             db_row = s.get(PaperTrade5mBinary, row.id)
             db_row.status = TradeStatus.settled
@@ -206,6 +282,10 @@ class Scanner:
             db_row.fee_usd = fee_usd
             db_row.pnl_usd_paper_net = pnl_usd_paper_net
             db_row.pnl_ratio_paper_net = pnl_ratio_paper_net
+            db_row.pnl_ratio_live = pnl_ratio_live
+            db_row.pnl_usd_live = pnl_usd_live
+            db_row.pnl_usd_live_net = pnl_usd_live_net
+            db_row.pnl_ratio_drift_live = pnl_ratio_drift_live
             db_row.settled_at_s = int(time.time())
             s.add(db_row)
             s.commit()

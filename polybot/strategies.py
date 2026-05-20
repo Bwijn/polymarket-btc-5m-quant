@@ -15,6 +15,7 @@ class Strategy:
     expr: str             # trigger expression
     entry_offset_s: int   # seconds past candle_start to evaluate trigger + take entry price
     direction: str        # 'UP' | 'DOWN'
+    live: bool = False    # place real orders (also gated by config.LIVE_ENABLED)
 
     def __post_init__(self):
         validate(self.expr)
@@ -24,7 +25,7 @@ class Strategy:
 
 # H5: weekend dump cluster A — locked 2026-05-07
 # 2026-05-16 rename: p_intra_60 → p_intra_60_up (direction-explicit schema, 触发条件不变)
-H5 = Strategy('H5', 'p_intra_60_up<0.445 & is_weekend==1', entry_offset_s=60, direction='DOWN')
+H5 = Strategy('H5', 'p_intra_60_up<0.445 & is_weekend==1', entry_offset_s=60, direction='DOWN', live=True)
 
 # H6: max-intra-120 extreme dump — killed 2026-05-11 (factor_decisions id=1)
 # Paper n=43, net_ev -1.55%, entry drift +5.6¢ 吃光 alpha. Kept as artifact, not ACTIVE.
@@ -57,6 +58,7 @@ R2 = Strategy(
     'min_intra_90_dn<0.3700000047683716 & slope_pre_60_dn__rank24h<0.1111111119389534',
     entry_offset_s=90,
     direction='UP',
+    live=True,
 )
 
 # R4: bn_taker + bn_vol_zscore__zs24h. bt_nev=+7.53%, trig=4.0%, wr=63.1%, mean_ep=0.51 (drift-safe)
