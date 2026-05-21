@@ -1,55 +1,42 @@
 # Polybot TODO
 
-## NOW — Build Live Execution Layer
+## NOW — Phase 1 live validation
 
-当前系统是纯 paper simulator, 零真钱下单代码 (config.py:1 "Live config loaded later").
-"上 live" = build 一个子系统, 不是翻开关.
+Live ARMED 2026-05-20 (LIVE_ENABLED=True, 新 VPS 四区). paper_trade_5m_binary
+3 线 (bt/paper/live). H5/R2 触发即下真 FOK 单, size = wallet × 5% Kelly.
+首批 live: 2 单 R2 全胜 (#629 +$0.35 / #644 +$3.05, computed net +$3.40),
+1 单 FOK 杀单 (#636, slippage cap 拦, 无损).
 
-- **先 align 设计决策** (动手前):
-  - private key 怎么管 (安全 — 错了直接丢钱)
-  - 官方 SDK: py-clob-client-v2 (CLAUDE.md 强制官方)
-  - 第一笔 live 最小化测试 ($1 PM min 验证全链路再上正常 size)
+- **手动 redeem** — 6.8 份 winning tokens 锁在 proxy wallet, 现金 ~$30.7、~6 天 runway. redeem 时记 before/after USDC → ground-truth 对账 `pnl_usd_live`
+- 已验证: fee 公式实测精确吻合 ✓; 执行 drift 已量化 (et>0s ~0, et=0s ~−7%)
+- 攒够 live n → R2 live drift 是否吃掉 net EV → 定 Phase 2. **R2 未证: n=49 paper + n=2 live**
 
-- **Build 8 组件**:
-  1. 装 py-clob-client-v2
-  2. Credentials 加载 (private key / API key / funder address)
-  3. 下单: HIT → 签名 + 提交 CLOB taker BUY
-  4. Fill 处理: 成交确认 + 实际成交价 vs book_ask (真 drift)
-  5. Position 跟踪 (真实持仓, 不只 db row)
-  6. Redeem: market resolve 后领奖
-  7. Wallet 余额查询 (给 Kelly sizing)
-  8. Error handling (下单失败 / 网络 / 余额不足 / 被拒)
+## NEXT
 
-- **Sizing 改造** (live 时): KELLY_FRAC config (H5/R2=0.05) + `wallet × kelly_frac` 动态 size, 取代 PAPER_SIZE_USD 固定值
-
-## NEXT (Live layer 建好 + Phase 1 验证通过后)
-
-- Phase 1: H5+R2 live on $34, 各 5% Kelly, 1 weekend+weekday 验证 drift/fee/settle
-- Phase 2: 充值 $100 → $134, sizing 自动 4x scale
+- **Component 6 — 程序化 redeem**: 走 Relayer API (`relayer-v2.polymarket.com/submit`, gasless meta-tx) 签 redeem, 优于裸 web3 (免 gas, 配 proxy 账户). CLOB SDK 无此功能. **无人值守 live 前必做**
+- Phase 2: 充值 $100 → ~$134, dynamic sizing 自动 scale
 
 ## DECISIONS WAITING
 
-- **R7**: EV +20% 漂亮但 drift_t=-2.18 d_mean=-11% (drift 警报, leading indicator). paper-only watch, n→30 后: drift 持续 → KILL, drift 回正 → 考虑 live
+- **R4 grace (pre-registered kill)**: R4 现 n=26, net EV +1.6% 但 gross EV t=+0.27 (零 edge, 正 net 是噪声). grace 到 **n=50 复查** — KILL, 除非 net EV ≥ +0.03 (清掉 fee 仍有余、证明真 edge). 默认 KILL, 心理预期 kill. (R6 已 kill 2026-05-21, factor_decisions id=6)
 
 ## INFRASTRUCTURE (可跟 live 并行)
 
-- **Mining overfit 复盘** (R1/R3 教训): cluster dedup 漏洞 + OOS 144 hit 不稳 + mean_ep>0.7 derate + 加 `wr_paper_predict` 压测列
-- **promote_rule.py SSOT**: confirmation gate 函数化 (drift_t<-2 AND mean<-3% / wr_p<0.01 AND gap>10% / EV floor)
-- **R-series pre-reg POST-HOC backfill**: H5/R2/R7 入 pre_registrations 表 (notes 标 POST-HOC)
-- **Layer 4 gate**: factor_decisions 写入前 JOIN pre_reg_binding 校验
-- **Cleanup scratch/Hx_*/**: H5/H6 spec 已迁 db, 删
+- **Mining 方法论修复** (root cause 已定位 = carry-forward, 见 CLAUDE.md Trading Constitution 第3条): 7 candidate 只 R2 活. 修法 — ① bt 降级 coarse pre-filter, 永不信其 EV 数值; ② paper = 唯一真 OOS; ③ et=0s 候选扣 ~−7% haircut, 优先 et>0s; ④ 拓宽 paper funnel (别信 bt top-N)
+- **book recorder (新)**: carry-forward 的 forward fix — 现 WS 只 trigger 时取瞬时 ask、不持久化. 需建 recorder 录每根 candle 各 entry offset 真实 ask → 攒真实 book 数据集. 下轮 mining 前做- **Cleanup scratch/Hx_*/**: H5/H6 spec 已迁 db, 删
+- **旧 VPS (荃湾) ~05-31 到期**: cold standby fallback; 新机稳定确认后不续费
 
 ## BACKGROUND (被动等数据)
 
-- R4/R5/R6 paper-only 继续, n>20 才有判断价值
-- 下轮 mining (methodology audit 后启动): 补 research 层空缺 (paper queue 健康需 15-50 alternate, 现 5-7)
+- 下轮 mining: carry-forward 修法 (①-④ + book recorder) 落地后启动; paper queue 健康需 15-50 alternate, 现 3-4
 
 ## FORWARD SCHEMA (下次加列机会)
 
 - book_depth_at_trigger (top-of-book size, 估真 slippage)
 - trigger_eval_ms (触发计算耗时)
 - book_age_at_entry_ms (用的 book 离 entry 多远, stale book bias 检测)
-- fee_rate_at_entry (PM crypto rate 当时是多少, PM 改 rate 不静默 invalidate 老数据)
+- fee_rate_at_entry (PM crypto rate 当时是多少, 现实测 0.07; PM 改 rate 不静默 invalidate 老数据)
+- pnl_usd_live_realized (redeem 时实测到账额, 跟计算 pnl_usd_live 对账 — 跟 Component 6 一起加)
 
 ## OPEN QUESTIONS
 

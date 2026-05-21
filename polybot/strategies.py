@@ -69,7 +69,9 @@ R4 = Strategy(
     direction='DOWN',
 )
 
-# R7: bn_taker_60 + bn_vol_zscore__rank24h. bt_nev=+6.54%, trig=4.2%, wr=61.5%, mean_ep=0.50 (drift-safe)
+# R7: bn_taker_60 + bn_vol_zscore__rank24h — killed 2026-05-21 (factor_decisions id=5)
+# Paper n=33, net_ev -2.72%, gross_ev +0.40% (≈0). 死因: 零 alpha; bt_nev +6.54%
+# 是 carry-forward + 选择性虚高假象. drift_t -2.33. Kept as artifact, not ACTIVE.
 R7 = Strategy(
     'R7',
     'bn_taker_buy_ratio_pre_60>0.8810144662857056 & bn_vol_zscore_pre_60__rank24h>0.8125',
@@ -85,8 +87,9 @@ R3 = Strategy(
     direction='DOWN',
 )
 
-# R6: basis_pre__zs7d + bn_vol_zscore__zs7d. bt_nev=+6.79%, trig=4.1%, wr=62.5%, mean_ep=0.52 (drift-safe)
-# 跨数据源 (PM × Binance basis) + 唯一用 __zs7d 的 candidate
+# R6: basis_pre__zs7d + bn_vol_zscore__zs7d — killed 2026-05-21 (factor_decisions id=6)
+# Paper n=24, net_ev -11.4%, gross_ev -8.3%, winrate 50% (coin flip). 死因: 零 alpha
+# (全 7 candidate net EV 最差). bt_nev +6.79% 是 carry-forward 假象. Kept as artifact.
 R6 = Strategy(
     'R6',
     'basis_pre_60_up__zs7d<-1.564877986907959 & bn_vol_zscore_pre_60__zs7d>0.4064948856830597',
@@ -95,8 +98,9 @@ R6 = Strategy(
 )
 
 # R1, R3, R5 killed 2026-05-20 (factor_decisions id 2/3/4): classifier overfit /
-# EV below floor. Definitions kept above for audit; dropped from ACTIVE.
-ACTIVE: tuple[Strategy, ...] = (H5, R2, R7, R4, R6)
+# EV below floor. R7/R6 killed 2026-05-21 (id 5/6): 零 alpha (gross EV ≈ 0).
+# Definitions kept above for audit; dropped from ACTIVE.
+ACTIVE: tuple[Strategy, ...] = (H5, R2, R4)
 
 
 if __name__ == '__main__':
