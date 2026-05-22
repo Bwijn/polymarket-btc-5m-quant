@@ -11,7 +11,7 @@ from polybot.lib.expr_eval_v1 import validate
 
 @dataclass(frozen=True)
 class Strategy:
-    id: str               # 'H5', 'R2', ...
+    id: str               # 'R2', 'R4', ...
     expr: str             # trigger expression
     entry_offset_s: int   # seconds past candle_start to evaluate trigger + take entry price
     direction: str        # 'UP' | 'DOWN'
@@ -22,10 +22,6 @@ class Strategy:
         if self.direction not in ('UP', 'DOWN'):
             raise ValueError(f"bad direction {self.direction!r}")
 
-
-# H5: weekend dump cluster A — locked 2026-05-07
-# 2026-05-16 rename: p_intra_60 → p_intra_60_up (direction-explicit schema, 触发条件不变)
-H5 = Strategy('H5', 'p_intra_60_up<0.445 & is_weekend==1', entry_offset_s=60, direction='DOWN', live=True)
 
 # R-series: paper_pick7_20260514 cherry-pick. Strategy.id = 'R<rank>',
 # rank = paper_candidates.rank in pm_btc5m.db.
@@ -47,7 +43,7 @@ R4 = Strategy(
     direction='DOWN',
 )
 
-ACTIVE: tuple[Strategy, ...] = (H5, R2, R4)
+ACTIVE: tuple[Strategy, ...] = (R2, R4)
 
 
 if __name__ == '__main__':
