@@ -114,7 +114,7 @@ class Scanner:
             log.warning(f"[{strat.id}] cs={cs} HIT but p_{strat.direction.lower()} None — skip")
             return
         entry_price_backtest = p_dir
-        # p_up_at_entry: 保留作 audit 字段 (始终是 UP 价, 跨 strategy direction 通用基线)
+        # p_up_at_entry_backtest: audit 字段 (始终是 UP 价, 跨 strategy direction 通用基线)
         p_up = get_price_at(ticks_up, strat.entry_offset_s, cs)
 
         # paper-side: live orderbook BOTH sides recorded for arb_gap analysis.
@@ -134,12 +134,12 @@ class Scanner:
             expr=strat.expr,
             direction=Direction(strat.direction),
             slug=slug,
-            market_id=m['market_id'],
+            condition_id=m['condition_id'],
             up_token=m['up_token'],
             down_token=m['down_token'],
             candle_start_s=cs,
             entry_offset_s=strat.entry_offset_s,
-            p_up_at_entry=p_up,
+            p_up_at_entry_backtest=p_up,
             entry_price_backtest=entry_price_backtest,
             book_bid_up=book_bid_up,
             book_ask_up=book_ask_up,
@@ -148,8 +148,8 @@ class Scanner:
             book_ts_ms_up=book_ts_ms_up,
             book_ts_ms_dn=book_ts_ms_dn,
             entry_price_paper=entry_price_paper,
-            size_usd=PAPER_SIZE_USD,
-            trigger_features=df.iloc[0].to_json(),
+            size_usd_intended=PAPER_SIZE_USD,
+            trigger_features_backtest=df.iloc[0].to_json(),
             status=TradeStatus.open,
             opened_at_s=int(time.time()),
         )
@@ -204,21 +204,21 @@ class Scanner:
     def _set_live_status(self, row_id: int, status: str) -> None:
         with Session(self.engine) as s:
             r = s.get(PaperTrade5mBinary, row_id)
-            r.real_status = status
+            r.order_status_live = status
             s.add(r)
             s.commit()
 
     def _record_live(self, row_id: int, fill: LiveFill) -> None:
         with Session(self.engine) as s:
             r = s.get(PaperTrade5mBinary, row_id)
-            r.real_status = fill.status
+            r.order_status_live = fill.status
             r.order_id = fill.order_id
-            r.tx_hash = fill.tx_hash
+            r.tx_hash_live = fill.tx_hash
             if fill.success:
-                r.real_size_usd = fill.usdc_paid
-                r.real_shares = fill.shares
-                r.real_fill_price = fill.fill_price
-                r.real_fee_usd = fill.usdc_paid * paper_friction_ratio(fill.fill_price)
+                r.size_usd_live = fill.usdc_paid
+                r.shares_live = fill.shares
+                r.entry_price_live = fill.fill_price
+                r.fee_usd_live = fill.usdc_paid * paper_friction_ratio(fill.fill_price)
             else:
                 r.error_msg = fill.error_msg
             s.add(r)
@@ -243,10 +243,10 @@ class Scanner:
             pnl_ratio_bt = (1.0 - row.entry_price_backtest) / row.entry_price_backtest
         else:
             pnl_ratio_bt = -1.0
-        pnl_usd_bt = pnl_ratio_bt * row.size_usd
+        pnl_usd_bt = pnl_ratio_bt * row.size_usd_intended
 
         # paper pnl ratio (only if we captured book_ask at trigger). Gross of fee;
-        # fee_usd / *_net columns below carry the friction-adjusted view.
+        # fee_usd_paper / *_net columns below carry the friction-adjusted view.
         pnl_ratio_paper = pnl_usd_paper = pnl_ratio_drift = None
         fee_usd = pnl_usd_paper_net = pnl_ratio_paper_net = None
         if row.entry_price_paper is not None and row.entry_price_paper > 0:
@@ -254,21 +254,23 @@ class Scanner:
                 pnl_ratio_paper = (1.0 - row.entry_price_paper) / row.entry_price_paper
             else:
                 pnl_ratio_paper = -1.0
-            pnl_usd_paper = pnl_ratio_paper * row.size_usd
+            pnl_usd_paper = pnl_ratio_paper * row.size_usd_intended
             pnl_ratio_drift = pnl_ratio_paper - pnl_ratio_bt
             fee_ratio = paper_friction_ratio(row.entry_price_paper)
-            fee_usd = row.size_usd * fee_ratio
+            fee_usd = row.size_usd_intended * fee_ratio
             pnl_usd_paper_net = pnl_usd_paper - fee_usd
             pnl_ratio_paper_net = pnl_ratio_paper - fee_ratio
 
         # live track pnl (only if a real order filled). Winning live pnl is the
         # economic truth at resolution; converting shares→USDC needs redeem.
-        pnl_ratio_live = pnl_usd_live = pnl_usd_live_net = pnl_ratio_drift_live = None
-        if row.real_fill_price and row.real_fill_price > 0 and row.real_size_usd:
-            pnl_ratio_live = ((1.0 - row.real_fill_price) / row.real_fill_price
+        pnl_ratio_live = pnl_ratio_live_net = pnl_usd_live = None
+        pnl_usd_live_net = pnl_ratio_drift_live = None
+        if row.entry_price_live and row.entry_price_live > 0 and row.size_usd_live:
+            pnl_ratio_live = ((1.0 - row.entry_price_live) / row.entry_price_live
                               if my_won else -1.0)
-            pnl_usd_live = pnl_ratio_live * row.real_size_usd
-            pnl_usd_live_net = pnl_usd_live - (row.real_fee_usd or 0.0)
+            pnl_ratio_live_net = pnl_ratio_live - paper_friction_ratio(row.entry_price_live)
+            pnl_usd_live = pnl_ratio_live * row.size_usd_live
+            pnl_usd_live_net = pnl_usd_live - (row.fee_usd_live or 0.0)
             if pnl_ratio_paper is not None:
                 pnl_ratio_drift_live = pnl_ratio_live - pnl_ratio_paper
 
@@ -278,16 +280,17 @@ class Scanner:
             db_row.up_won = m['up_won']
             db_row.pnl_ratio_backtest = pnl_ratio_bt
             db_row.pnl_ratio_paper = pnl_ratio_paper
-            db_row.pnl_ratio_drift = pnl_ratio_drift
+            db_row.pnl_ratio_drift_paper_backtest = pnl_ratio_drift
             db_row.pnl_usd_backtest = pnl_usd_bt
             db_row.pnl_usd_paper = pnl_usd_paper
-            db_row.fee_usd = fee_usd
+            db_row.fee_usd_paper = fee_usd
             db_row.pnl_usd_paper_net = pnl_usd_paper_net
             db_row.pnl_ratio_paper_net = pnl_ratio_paper_net
             db_row.pnl_ratio_live = pnl_ratio_live
+            db_row.pnl_ratio_live_net = pnl_ratio_live_net
             db_row.pnl_usd_live = pnl_usd_live
             db_row.pnl_usd_live_net = pnl_usd_live_net
-            db_row.pnl_ratio_drift_live = pnl_ratio_drift_live
+            db_row.pnl_ratio_drift_live_paper = pnl_ratio_drift_live
             db_row.settled_at_s = int(time.time())
             s.add(db_row)
             s.commit()

@@ -61,7 +61,7 @@ _SELECTOR = keccak(text="redeemPositions(address,bytes32,bytes32,uint256[])")[:4
 # `_place_live`), so a winner is UP-bet+UP-won OR DOWN-bet+DOWN-won (up_won==0).
 # The token we hold = up_token if direction=UP else down_token.
 _WINNERS_SQL = text(
-    "SELECT id, market_id, up_token, down_token, direction "
+    "SELECT id, condition_id, up_token, down_token, direction "
     "FROM paper_trade_5m_binary "
     "WHERE order_id IS NOT NULL AND status = 'settled' AND redeem_tx IS NULL "
     "AND ((direction = 'UP' AND up_won = 1) OR (direction = 'DOWN' AND up_won = 0))"
@@ -179,13 +179,13 @@ def redeem_sweep(engine, dry_run: bool = False) -> None:
             continue
         if dry_run:
             log.info(f"redeem #{w.id}: [DRY] would redeem {held / 1e6:.4f} pUSD "
-                     f"({w.direction}, cond {w.market_id[:14]}…)")
+                     f"({w.direction}, cond {w.condition_id[:14]}…)")
             continue
         try:
             if client is None:
                 client = _client()
             tx = Transaction(to=to_checksum_address(ADAPTER),
-                             data=_inner_calldata(w.market_id), value="0")
+                             data=_inner_calldata(w.condition_id), value="0")
             result = client.execute([tx], f"redeem-row-{w.id}").wait()
         except Exception:        # noqa: BLE001
             log.exception(f"redeem #{w.id}: submit failed — retry next sweep")

@@ -47,7 +47,7 @@ async def fetch_event(slug: str) -> Optional[dict]:
 def parse_market(event: dict) -> Optional[dict]:
     """Pull the single-market binary fields from a btc-updown-5m event.
 
-    Returns {'market_id', 'up_token', 'down_token', 'closed', 'up_won'?}.
+    Returns {'condition_id', 'up_token', 'down_token', 'closed', 'up_won'?}.
     up_won is set only when closed=True and outcomePrices parseable.
     """
     markets = event.get("markets") or []
@@ -60,7 +60,7 @@ def parse_market(event: dict) -> Optional[dict]:
     if not tokens or len(tokens) < 2:
         return None
     out = {
-        "market_id": m.get("conditionId", ""),
+        "condition_id": m.get("conditionId", ""),
         "up_token": tokens[0],
         "down_token": tokens[1],
         "closed": bool(m.get("closed")),
@@ -118,7 +118,7 @@ if __name__ == '__main__':
         assert m is not None, "no market parsed"
         assert m['closed'] is True, "expected closed"
         assert m['up_won'] in (0, 1), m
-        print(f"  ✓ event {slug}: market_id={m['market_id'][:14]}.. "
+        print(f"  ✓ event {slug}: condition_id={m['condition_id'][:14]}.. "
               f"up={m['up_token'][:8]}.. down={m['down_token'][:8]}.. "
               f"closed={m['closed']} up_won={m['up_won']}")
 
