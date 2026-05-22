@@ -29,7 +29,7 @@
   4. **真实 response 是 SSOT (single source of truth)**: docs 可能过时 (如 `ORDER_STATUS_MATCHED` 实际 `MATCHED`). 涉及资金的 enum/field, 以实际录制 response 为准, 不以 docs 为准. probe 不能跳过 docs 但 docs 不能跳过 probe — **两步都要**.
   5. **Major version 后强制 re-fetch llms.txt**: V1→V2 cutover 时整个 index 重排, 旧链接死, informal filter (如 `series_slug`) 砍掉. re-fetch 是 mandatory 不是 optional.
   6. **SDK 是 wrapper 不是 docs 替代**: SDK 语义 = endpoint 语义, enum / edge case / 限速 / lag (滞后) 都仍需查 docs. SDK 没 wrap 的新 endpoint, httpx 直调公开 read endpoint 合规.
-- **Python 运行器统一用 uv** 所有 scratch/probe/cli 脚本一律 `uv run python <script>` 或 `uv run --with <pkg> python <script>`。禁止 `python3 script.py`（system python 没 httpx 等依赖）或手动激活 venv。`uv run` 会自动探测 pyproject.toml 的 venv；一次性依赖用 `--with`。
+- **Python 运行器统一用 uv，依赖进 pyproject、复用持久 venv** 脚本一律 `uv run python <script>`。禁止：`python3 script.py`（system python 无依赖）、手动激活 venv、`uv run --with`（每次重新 resolve 的临时环境、非持久、等同 npx —— 别被"省事"误导）。依赖一律 `uv add` 进项目 `pyproject.toml`，装入持久 venv 复用。redeem / bot 相关 scratch 脚本借 polybot 环境跑：`uv run --project polybot python scratch/xxx.py`；mining / 研究脚本用 root `.venv`。
 - **WSL storage 三层观察, 不准只看 `df -h /mnt/c`**: 跑在 WSL2 里, 存储是三层嵌套, 不是一个数字能描述:
   1. **WSL 内部 ext4 used** (`df -h /` 的 used): 真实文件占用, e.g. 77G
   2. **vhdx 物理文件大小** (Windows 端看 `ext4.vhdx`): 历史最大水位, 只增不减, e.g. 139G. 用 PowerShell `Optimize-VHD` 可手动回收已删除空间
