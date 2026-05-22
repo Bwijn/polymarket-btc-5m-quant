@@ -12,10 +12,12 @@ rsync -avz \
   --exclude='.venv' \
   --exclude='polybot.log' \
   --exclude='__pycache__' \
-  --exclude='.env' \
   --exclude='*.pyc' \
   --exclude='backups/' \
   /home/polymarket_work/polybot/ vps:/opt/polybot/
+
+echo "=== Syncing VPS venv to uv.lock ==="
+ssh vps "cd /opt/polybot && uv sync"
 
 echo "=== Restarting service ==="
 ssh vps "systemctl restart polybot"

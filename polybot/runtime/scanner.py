@@ -24,6 +24,7 @@ from polybot.runtime.config import (DB_FILE, ENTRY_LAG_S, SETTLE_LAG_S, PAPER_SI
                             LIVE_ENABLED, KELLY_FRAC, LIVE_MIN_USD, LIVE_SLIPPAGE_CAP)
 from polybot.runtime.models import PaperTrade5mBinary, TradeStatus, Direction
 from polybot.runtime.live_exec import LiveExecutor, LiveFill
+from polybot.runtime.redeem import redeem_loop
 from polybot.strategies import ACTIVE, Strategy
 from polybot.lib.expr_eval_v1 import evaluate
 from polybot.lib.entry_price import get_price_at
@@ -47,6 +48,7 @@ def _engine(db_path: str):
 class Scanner:
     def __init__(self, db_path: str = DB_FILE, book_cache: BookCache | None = None):
         self.engine = _engine(db_path)
+        self.db_path = db_path
         self.book_cache = book_cache or BookCache()
         # LiveExecutor only when armed — None ⇒ pure paper, no key/network touched.
         self.live = LiveExecutor() if LIVE_ENABLED else None
@@ -364,4 +366,9 @@ class Scanner:
         cs_now = (int(time.time()) // CANDLE_S) * CANDLE_S
         self._seed_evaluated_from_db(cs_min=cs_now - CANDLE_S * 2)
         log.info(f"scanner up seeded={len(self._evaluated)}")
-        await asyncio.gather(self.schedule_loop(), self.settle_loop())
+        loops = [self.schedule_loop(), self.settle_loop()]
+        if LIVE_ENABLED:
+            # Component 6: redeem winning live positions → pUSD (frees Kelly
+            # bankroll). In-process coroutine; redeem_loop is self-guarded.
+            loops.append(redeem_loop(self.db_path))
+        await asyncio.gather(*loops)

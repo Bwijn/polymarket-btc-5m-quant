@@ -94,6 +94,12 @@ class PaperTrade5mBinary(SQLModel, table=True):
     pnl_ratio_live: float | None = None
     pnl_ratio_drift_live: float | None = None  # pnl_ratio_live - pnl_ratio_paper
 
+    # NOTE: a `redeem_tx TEXT` column also exists on this table — added by
+    # scratch/migrate_add_redeem_tx.py (Component 6). Holds the redeem tx hash
+    # once a winning position is converted to pUSD, or 'external' if redeemed
+    # outside the loop. Deliberately kept OUT of this model so the redeem
+    # feature can never break the trading hot path.
+
     opened_at_s: int
     settled_at_s: int | None = None
     error_msg: str | None = None
