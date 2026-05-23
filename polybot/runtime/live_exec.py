@@ -44,7 +44,7 @@ class LiveExecutor:
         self.client = ClobClient(CLOB_API, chain_id=CHAIN_ID,
                                  key=os.environ["PRIVATE_KEY"], creds=creds,
                                  signature_type=SIG_TYPE, funder=FUNDER,
-                                 retry_on_error=True)
+                                 retry_on_error=False)
         self.client.assert_level_2_auth()
         log.info(f"live executor ready | signer={self.client.get_address()} "
                  f"funder={FUNDER}")
