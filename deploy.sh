@@ -9,6 +9,11 @@ uv run python scratch/tools/verify_compute_ssot.py --n-events 30
 # Common cause: someone added math to mining/features/<x>.py without delegating
 # to polybot.lib.compute, or modified polybot without re-syncing mining.
 
+echo "=== Dashboard SSOT verify: ACTIVE ⊆ paper_candidates ==="
+uv run python scratch/tools/verify_active_audit.py
+# Fails (exit 1) if any ACTIVE strategy has no paper_candidates audit row.
+# Common cause: deploying a strategy without going through mining cycle INSERT.
+
 echo "=== Regen BASE_COLS from features.parquet (SSOT codegen) ==="
 uv run python scratch/tools/gen_base_cols.py
 
