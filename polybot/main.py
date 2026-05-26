@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from polybot.runtime.config import LOG_FILE, DB_FILE
-from polybot.runtime.pm_ws import BookCache, WsBookManager
+from polybot.runtime.pm_ws import BookCache, TradesCache, WsBookManager
 from polybot.runtime.scanner import Scanner
 
 logging.basicConfig(
@@ -23,8 +23,9 @@ logging.basicConfig(
 
 async def _amain():
     cache = BookCache()
-    ws_mgr = WsBookManager(cache)
-    scanner = Scanner(DB_FILE, book_cache=cache)
+    trades_cache = TradesCache()
+    ws_mgr = WsBookManager(cache, trades_cache=trades_cache)
+    scanner = Scanner(DB_FILE, book_cache=cache, trades_cache=trades_cache)
     try:
         await asyncio.gather(
             ws_mgr.run_forever(),

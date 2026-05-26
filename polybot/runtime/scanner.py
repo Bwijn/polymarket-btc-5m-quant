@@ -32,7 +32,7 @@ from polybot.lib.entry_price import get_price_at
 from polybot.lib.friction import paper_friction_ratio
 from polybot.runtime.features import compute_row, needs_klines
 from polybot.runtime.pm_api import slug_for, fetch_event, parse_market, fetch_prices_history
-from polybot.runtime.pm_ws import BookCache
+from polybot.runtime.pm_ws import BookCache, TradesCache
 from polybot.runtime.bn_api import fetch_klines
 
 log = logging.getLogger("polybot.scanner")
@@ -47,10 +47,13 @@ def _engine(db_path: str):
 
 
 class Scanner:
-    def __init__(self, db_path: str = DB_FILE, book_cache: BookCache | None = None):
+    def __init__(self, db_path: str = DB_FILE,
+                 book_cache: BookCache | None = None,
+                 trades_cache: 'TradesCache | None' = None):
         self.engine = _engine(db_path)
         self.db_path = db_path
         self.book_cache = book_cache or BookCache()
+        self.trades_cache = trades_cache    # INTRA features need this; None → INTRA = NaN
         # LiveExecutor only when armed — None ⇒ pure paper, no key/network touched.
         self.live = LiveExecutor() if LIVE_ENABLED else None
         # _evaluated: (strategy_id, cs) we've already eval'd (hit or miss).
@@ -102,7 +105,13 @@ class Scanner:
 
         # engine=self.engine → compute_row 查/写 feature_history (transform 用).
         # 无 transform 的 expr (e.g., H5) 不触发任何 db op, engine arg 无副作用.
-        df = compute_row(strat.expr, ticks_up, ticks_dn, cs, engine=self.engine, klines=klines)
+        # trades=trades_cache[cid] → INTRA features (max/min/mean_intra, pmt_*) source.
+        # b3295eb migration: INTRA features 改用 trades-based, scanner 必须 pass trades.
+        trades = self.trades_cache.get(m['condition_id']) if self.trades_cache else []
+        df = compute_row(strat.expr, ticks_up, ticks_dn, cs,
+                         trades=trades,
+                         up_token=m['up_token'], dn_token=m['down_token'],
+                         engine=self.engine, klines=klines)
         hit = bool(evaluate(strat.expr, df).iloc[0])
         self._evaluated.add((strat.id, cs))
         if not hit:

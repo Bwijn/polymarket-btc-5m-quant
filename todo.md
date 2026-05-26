@@ -14,25 +14,15 @@
 
 ## NEXT (顺序)
 
-- **[NEXT-1] scanner pmtrades integration** ← **当前下一步 — P-series + R2 当前 silent crash 必修**
-  - **症状**: scanner runtime compute_row 不算 INTRA features (max_intra/min_intra/mean_intra/delta_intra*),
-    R2 silent crash since 2026-05-24 (b3295eb deploy 后), P1-P4 deploy 后立即 crash
-  - **Root cause** (b3295eb incomplete migration): mining INTRA features 改用 trades-based
-    `compute_pmtrades_features(rows, cs, up_token, dn_token)`, 但 scanner.py + runtime/features.py
-    没集成, 仍只 call old `compute_pm_features(ticks_up, ticks_dn, cs)` (只算 PRE features)
-  - **Fix scope** (ws subscribe 路线, 跟 book_cache 同模式):
-    1. `polybot/pm_ws.py`: 加 trades channel subscribe (现仅 book channel)
-    2. `polybot/runtime/scanner.py`: 加 `trades_cache` 类似 `book_cache`, 维护 per-cid `[cs-300, cs+330]`
-       window 内 trades; 加 fetch_trades_history fallback (cold start / cache miss)
-    3. `polybot/runtime/features.py compute_row`: 集成 `compute_pmtrades_features` 进 family pool,
-       和 PM / BN / basis 同等 merge
-  - Effort 半天-1 天. ws 优雅 (无 lag, 跟 book 一致 push 模式)
-  - 之前: 加 fetch trades API + pagination + in-script ts filter (PM /trades 不支持 startTime/endTime)
-  - 验证: scanner 重启后看 P1-P4 + R2 是否真 trigger (log 无 NotImplementedError)
+- **[NEXT-1] paper graduation 等 sample**
+  - R4 BN features 一直工作, n=69 → 200 估 1 个月
+  - R2 + P1-P4 已修 (scanner pmtrades integration 完成), 开始累 sample
+  - P3 + P4 同 candle co-fire 已观察 (corr 0.59 sub-mechanism, 符合预期)
 
-- **[NEXT-2] paper graduation 等 sample**
-  - R4 仍正常 (BN features), n=69 → 200 估 1 个月
-  - R2 + P1-P4 待 NEXT-1 fix 后才能继续累 sample
+- **[NEXT-2] Local end-to-end test workflow** — 不允许跳过
+  - 改 ws / scanner runtime 后必须: `cd polybot && PYTHONPATH=.. uv run python main.py`
+    跑 1-2 candle, grep ERROR, 无再 deploy
+  - Deploy = production verification only, 不再 debug 迭代
 
 - **[NEXT-2] build_features 改 incremental** — 30-45 min → 30-60s (~50× 加速)
   - 每 source builder 加 "read existing, compute only missing (cid,cs)"; transforms 需 feed last 2016 events 作 context

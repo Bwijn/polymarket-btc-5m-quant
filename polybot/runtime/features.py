@@ -1,7 +1,8 @@
 """Paper-time feature materialization for trigger evaluation.
 
 Thin wrapper over `compute.py` (SSOT pure math). For each trigger eval:
-  1. Calls compute_pm_features once → all PM base values.
+  1. Calls compute_pm_features (PRE features) + compute_pmtrades_features (INTRA features)
+     + compute_bn_features (BN features, when expr touches bn_/basis_) → full base set.
   2. For expr cols that are transforms (`__zs24h` / `__zs7d` / `__rank24h`), queries
      feature_history (polybot.db rolling buffer) for past values and calls
      compute_zs / compute_rank.
@@ -9,20 +10,28 @@ Thin wrapper over `compute.py` (SSOT pure math). For each trigger eval:
   4. Returns 1-row DataFrame for evaluate() to consume.
 
 Public API:
-    compute_row(expr, ticks_up, ticks_dn, cs, engine=None) -> pd.DataFrame
+    compute_row(expr, ticks_up, ticks_dn, cs, *, trades, up_token, dn_token,
+                engine=None, klines=None) -> pd.DataFrame
+        ticks_up/ticks_dn: PM mid-price ticks (PRE features source)
+        trades: list of (ts, side, price, size, asset, proxy_wallet) for cid
+                (INTRA features source; b3295eb migration: trades-based not mid-price)
+        up_token/dn_token: needed by compute_pmtrades_features for direction split
         engine: SQLAlchemy engine for polybot.db. Required if expr uses transforms.
-                Without engine, transform atoms raise NotImplementedError.
+        klines: pandas DataFrame for BN features (cs-3600 to cs Binance klines).
 
 Coverage:
-    PM family (intra+pre+derived+time): full set from compute_pm_features
-    Transforms (__zs24h/__zs7d/__rank24h) over any PM base feature
-    NotImplementedError for: bn_* / basis_* (need scanner Binance fetch wiring)
+    PRE (slope_pre, mean_pre, asym, vol_ratio, ...): compute_pm_features (ticks-based)
+    INTRA (delta_intra, max/min/mean_intra, pmt_whale, pmt_flow_imb, ...): compute_pmtrades_features (trades-based)
+    BN (bn_taker, bn_vol_zscore, ...): compute_bn_features (klines-based)
+    basis (basis_pre_X): compute_basis_features (PM + BN derived)
+    Transforms (__zs24h/__zs7d/__rank24h) over any base feature.
 """
 from __future__ import annotations
 import pandas as pd
 from sqlmodel import Session, select
 
-from polybot.lib.compute import (compute_pm_features, compute_bn_features, compute_basis_features,
+from polybot.lib.compute import (compute_pm_features, compute_pmtrades_features,
+                         compute_bn_features, compute_basis_features,
                          compute_zs, compute_rank, parse_transform_col)
 from polybot.lib.expr_eval_v1 import validate
 
@@ -51,15 +60,20 @@ def needs_klines(expr: str) -> bool:
     return any(b.startswith('bn_') or b.startswith('basis_') for b in all_bases)
 
 
-def compute_row(expr: str, ticks_up, ticks_dn, cs: int, engine=None, klines=None) -> pd.DataFrame:
+def compute_row(expr: str, ticks_up, ticks_dn, cs: int, *,
+                trades=None, up_token=None, dn_token=None,
+                engine=None, klines=None) -> pd.DataFrame:
     """1-row DataFrame with columns = base_cols referenced by expr.
 
-    ticks_up: list of {t, p} from PM /prices-history(up_token)
-    ticks_dn: list of {t, p} from PM /prices-history(down_token)
-    cs:       candle_start (unix seconds)
-    engine:   SQLAlchemy engine for polybot.db. Required for transform atoms.
-    klines:   pandas DataFrame indexed by ts (1-min Binance klines covering
-              [cs-3600, cs]). Required if expr has bn_* or basis_* atoms.
+    ticks_up:  PM /prices-history ticks (PRE features source)
+    ticks_dn:  PM /prices-history ticks (PRE features source)
+    trades:    list of (ts, side, price, size, asset, proxy_wallet) for cid.
+               INTRA features (max/min/mean_intra, delta_intra, pmt_*) require this.
+               Empty list → INTRA features = NaN (pmt_nan_record fallback).
+    up_token/dn_token: required if trades passed (compute_pmtrades_features needs).
+    cs:        candle_start (unix seconds)
+    engine:    SQLAlchemy engine for polybot.db. Required for transform atoms.
+    klines:    pandas DataFrame for BN features ([cs-3600, cs] coverage).
     """
     ast = validate(expr)
     needed_cols = set()
@@ -74,7 +88,10 @@ def compute_row(expr: str, ticks_up, ticks_dn, cs: int, engine=None, klines=None
             raise NotImplementedError(
                 f"expr_eval atom transforms not supported; use materialized suffix instead.")
 
-    pm = compute_pm_features(ticks_up, ticks_dn, cs)
+    pm  = compute_pm_features(ticks_up, ticks_dn, cs)
+    # INTRA features (b3295eb migration): trades-based, not mid-price ticks.
+    pmt = compute_pmtrades_features(trades or [], cs, up_token, dn_token) \
+          if (up_token and dn_token) else {}
 
     # Decompose cols: plain base vs transform
     plain_cols = []
@@ -106,7 +123,7 @@ def compute_row(expr: str, ticks_up, ticks_dn, cs: int, engine=None, klines=None
         if need_basis:
             basis_d = compute_basis_features(pm, bn)
 
-    all_features = {**pm, **bn, **basis_d}
+    all_features = {**pm, **pmt, **bn, **basis_d}
 
     # Validate all bases exist in computed family set
     for c in plain_cols:
