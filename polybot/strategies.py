@@ -46,7 +46,44 @@ R4 = Strategy(
     direction='DOWN',
 )
 
-ACTIVE: tuple[Strategy, ...] = (R2, R4)
+# P-series: 2pred_rep_20260526 cycle. 4 真独立信号 — Phase B mining 12 cross-bucket
+# common dedup correlation cluster (corr<0.7 greedy) 后真 independent representative.
+# 全 cs+60 entry, ep ≈ 0.83 (favorite side, fee 1.2%), 顺势 confirm BTC momentum 非 contrarian.
+# correlation: P1↔P2 / P3↔P4 同 direction sub-mechanism corr 0.55-0.59; cross direction ~0.
+
+# P1: delta_intra_60_dn + max_intra_30_dn__zs7d. v2_nev=+9.71%, n=139, ep=0.83
+P1 = Strategy(
+    'P1',
+    'delta_intra_60_dn>0.18000000715255737 & max_intra_30_dn__zs7d>1.666505217552185',
+    entry_offset_s=60,
+    direction='DOWN',
+)
+
+# P2: delta_intra_60_up + delta_intra_30_up (双 delta 极负). v2_nev=+8.88%, n=142, ep=0.81
+P2 = Strategy(
+    'P2',
+    'delta_intra_60_up<-0.2800000011920929 & delta_intra_30_up<-0.10999999940395355',
+    entry_offset_s=60,
+    direction='DOWN',
+)
+
+# P3: max_intra_30_up + delta_intra_60_dn__zs7d. v2_nev=+8.84%, n=141, ep=0.84
+P3 = Strategy(
+    'P3',
+    'max_intra_30_up>0.7400000095367432 & delta_intra_60_dn__zs7d<-0.8927792906761169',
+    entry_offset_s=60,
+    direction='UP',
+)
+
+# P4: delta_intra_60_dn__zs7d + mean_intra_30_up. v2_nev=+7.25%, n=142, ep=0.85
+P4 = Strategy(
+    'P4',
+    'delta_intra_60_dn__zs7d<-0.48432302474975586 & mean_intra_30_up>0.608535885810852',
+    entry_offset_s=60,
+    direction='UP',
+)
+
+ACTIVE: tuple[Strategy, ...] = (R2, R4, P1, P2, P3, P4)
 
 
 if __name__ == '__main__':

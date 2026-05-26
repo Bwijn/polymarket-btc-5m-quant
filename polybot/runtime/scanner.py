@@ -2,14 +2,15 @@
 
 Each TICK_S seconds:
   1. Trigger eval — for current + previous candle, for each ACTIVE strategy:
-     If now ≥ cs + entry_offset_s + ENTRY_LAG_S and (strategy_id, cs) not yet
-     recorded, fetch ticks via PM CLOB /prices-history, compute features,
-     evaluate trigger expression. On hit, INSERT a paper_trade_5m_binary row.
+     If now ≥ cs + entry_offset_s and (strategy_id, cs) not yet recorded,
+     fetch ticks via PM CLOB /prices-history (evaluation only), compute features,
+     evaluate trigger expression. On hit, INSERT a paper_trade_5m_binary row
+     with paper book snapshot only — bt track removed 2026-05-26 (derived
+     on-demand via scratch/research/compute_drift.py + PM /trades).
   2. Settle — for each open row where cs+300+SETTLE_LAG_S ≤ now, fetch event
      via PM Gamma /events/slug, parse outcomePrices, compute pnl, UPDATE.
 
-Trigger semantics 1:1 with mining: same expr_eval_v1.evaluate, same
-entry_price.get_price_at carry-forward, same fidelity=1 prices-history.
+Trigger semantics 1:1 with mining: same expr_eval_v1.evaluate.
 """
 from __future__ import annotations
 import asyncio
@@ -19,7 +20,7 @@ import time
 from typing import Optional
 from sqlmodel import Session, select, SQLModel, create_engine
 
-from polybot.runtime.config import (DB_FILE, ENTRY_LAG_S, SETTLE_LAG_S, PAPER_SIZE_USD,
+from polybot.runtime.config import (DB_FILE, SETTLE_LAG_S, PAPER_SIZE_USD,
                             SCHEDULE_REFRESH_S, SETTLE_POLL_S,
                             LIVE_ENABLED, KELLY_FRAC, LIVE_MIN_USD, LIVE_SLIPPAGE_CAP)
 from polybot.runtime.models import PaperTrade5mBinary, TradeStatus, Direction
@@ -107,15 +108,9 @@ class Scanner:
         if not hit:
             return
 
-        # Direction-correct entry_price_backtest: 不再 1-p flip, 用 direction 自己的 ticks
-        ticks_dir = ticks_up if strat.direction == 'UP' else ticks_dn
-        p_dir = get_price_at(ticks_dir, strat.entry_offset_s, cs)
-        if p_dir is None:
-            log.warning(f"[{strat.id}] cs={cs} HIT but p_{strat.direction.lower()} None — skip")
-            return
-        entry_price_backtest = p_dir
-        # p_up_at_entry_backtest: audit 字段 (始终是 UP 价, 跨 strategy direction 通用基线)
-        p_up = get_price_at(ticks_up, strat.entry_offset_s, cs)
+        # bt entry_price NOT computed here — bt track removed (2026-05-26).
+        # ticks_up/ticks_dn fetched above purely for compute_row expr evaluation.
+        # bt drift now derived on-demand via PM /trades (scratch/research/compute_drift.py).
 
         # paper-side: live orderbook BOTH sides recorded for arb_gap analysis.
         # Entry price = our side's ask (taker BUY crosses spread).
@@ -139,8 +134,6 @@ class Scanner:
             down_token=m['down_token'],
             candle_start_s=cs,
             entry_offset_s=strat.entry_offset_s,
-            p_up_at_entry_backtest=p_up,
-            entry_price_backtest=entry_price_backtest,
             book_bid_up=book_bid_up,
             book_ask_up=book_ask_up,
             book_bid_dn=book_bid_dn,
@@ -149,7 +142,6 @@ class Scanner:
             book_ts_ms_dn=book_ts_ms_dn,
             entry_price_paper=entry_price_paper,
             size_usd_intended=PAPER_SIZE_USD,
-            trigger_features_backtest=df.iloc[0].to_json(),
             status=TradeStatus.open,
             opened_at_s=int(time.time()),
         )
@@ -157,10 +149,7 @@ class Scanner:
             s.add(row)
             s.commit()
             s.refresh(row)
-        drift = (entry_price_paper - entry_price_backtest) if entry_price_paper else None
-        log.info(f"[{strat.id}] HIT cs={cs} p_up={p_up:.3f} "
-                 f"entry_bt={entry_price_backtest:.3f} entry_paper={entry_price_paper} "
-                 f"drift={f'{drift:+.3f}' if drift is not None else 'n/a'} "
+        log.info(f"[{strat.id}] HIT cs={cs} entry_paper={entry_price_paper} "
                  f"size=${PAPER_SIZE_USD:.2f} #{row.id}")
 
         # live track: place the real order for promoted strategies. Paper row is
@@ -238,16 +227,11 @@ class Scanner:
             (row.direction == 'UP'   and m['up_won'] == 1) or
             (row.direction == 'DOWN' and m['up_won'] == 0)
         )
-        # backtest pnl ratio
-        if my_won:
-            pnl_ratio_bt = (1.0 - row.entry_price_backtest) / row.entry_price_backtest
-        else:
-            pnl_ratio_bt = -1.0
-        pnl_usd_bt = pnl_ratio_bt * row.size_usd_intended
-
         # paper pnl ratio (only if we captured book_ask at trigger). Gross of fee;
         # fee_usd_paper / *_net columns below carry the friction-adjusted view.
-        pnl_ratio_paper = pnl_usd_paper = pnl_ratio_drift = None
+        # bt pnl + drift_paper_backtest removed 2026-05-26 — derived on-demand via
+        # scratch/research/compute_drift.py (PM /trades reproducible truth).
+        pnl_ratio_paper = pnl_usd_paper = None
         fee_usd = pnl_usd_paper_net = pnl_ratio_paper_net = None
         if row.entry_price_paper is not None and row.entry_price_paper > 0:
             if my_won:
@@ -255,7 +239,6 @@ class Scanner:
             else:
                 pnl_ratio_paper = -1.0
             pnl_usd_paper = pnl_ratio_paper * row.size_usd_intended
-            pnl_ratio_drift = pnl_ratio_paper - pnl_ratio_bt
             fee_ratio = paper_friction_ratio(row.entry_price_paper)
             fee_usd = row.size_usd_intended * fee_ratio
             pnl_usd_paper_net = pnl_usd_paper - fee_usd
@@ -278,10 +261,7 @@ class Scanner:
             db_row = s.get(PaperTrade5mBinary, row.id)
             db_row.status = TradeStatus.settled
             db_row.up_won = m['up_won']
-            db_row.pnl_ratio_backtest = pnl_ratio_bt
             db_row.pnl_ratio_paper = pnl_ratio_paper
-            db_row.pnl_ratio_drift_paper_backtest = pnl_ratio_drift
-            db_row.pnl_usd_backtest = pnl_usd_bt
             db_row.pnl_usd_paper = pnl_usd_paper
             db_row.fee_usd_paper = fee_usd
             db_row.pnl_usd_paper_net = pnl_usd_paper_net
@@ -296,15 +276,14 @@ class Scanner:
             s.commit()
 
         outcome = "WIN" if my_won else "LOSS"
-        paper_str = (f"paper={pnl_ratio_paper:+.1%} drift={pnl_ratio_drift:+.1%}"
-                     if pnl_ratio_paper is not None else "paper=n/a")
+        paper_str = f"paper={pnl_ratio_paper:+.1%}" if pnl_ratio_paper is not None else "paper=n/a"
         log.info(f"settle #{row.id} [{row.hypothesis}] {outcome} "
-                 f"bt={pnl_ratio_bt:+.1%} {paper_str} up_won={m['up_won']}")
+                 f"{paper_str} up_won={m['up_won']}")
 
     # ---- timer-driven trigger ----------------------------------------------
     async def schedule_one(self, strat: Strategy, cs: int) -> None:
-        """Sleep until cs+entry_offset+ENTRY_LAG_S, then evaluate. ms-precision wakeup."""
-        target_t = cs + strat.entry_offset_s + ENTRY_LAG_S
+        """Sleep until cs+entry_offset, then evaluate. ms-precision wakeup."""
+        target_t = cs + strat.entry_offset_s
         delay = target_t - time.time()
         if delay > 0:
             await asyncio.sleep(delay)
@@ -317,8 +296,7 @@ class Scanner:
 
     async def schedule_loop(self) -> None:
         """Periodically register schedule_one tasks for current + next candle."""
-        log.info(f"schedule loop: entry_lag={ENTRY_LAG_S}s "
-                 f"strategies={[s.id for s in ACTIVE]}")
+        log.info(f"schedule loop: strategies={[s.id for s in ACTIVE]}")
         while True:
             try:
                 now = int(time.time())
@@ -330,7 +308,7 @@ class Scanner:
                         if key in self._scheduled or key in self._evaluated:
                             continue
                         # too-late: entry window already closed (e.g. after restart)
-                        if now > cs + CANDLE_S + ENTRY_LAG_S:
+                        if now > cs + CANDLE_S:
                             self._evaluated.add(key)
                             continue
                         self._scheduled.add(key)

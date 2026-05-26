@@ -14,11 +14,25 @@
 
 ## NEXT (顺序)
 
-- **[NEXT-1] deploy 2pred_rep_20260526 4 reps 进 strategies.py + paper** ← **当前下一步**
-  - 改 `polybot/strategies.py` 加 4 ACTIVE entry (paper only, live=False)
-  - smoke test: 4 个 expr 在 scanner 能 parse + 触发
-  - `bash deploy.sh` 推 VPS, paper 跑积 ~200 sample (estim 30 天)
-  - graduation gate 自动评 (NEXT-3 工具支持)
+- **[NEXT-1] scanner pmtrades integration** ← **当前下一步 — P-series + R2 当前 silent crash 必修**
+  - **症状**: scanner runtime compute_row 不算 INTRA features (max_intra/min_intra/mean_intra/delta_intra*),
+    R2 silent crash since 2026-05-24 (b3295eb deploy 后), P1-P4 deploy 后立即 crash
+  - **Root cause** (b3295eb incomplete migration): mining INTRA features 改用 trades-based
+    `compute_pmtrades_features(rows, cs, up_token, dn_token)`, 但 scanner.py + runtime/features.py
+    没集成, 仍只 call old `compute_pm_features(ticks_up, ticks_dn, cs)` (只算 PRE features)
+  - **Fix scope** (ws subscribe 路线, 跟 book_cache 同模式):
+    1. `polybot/pm_ws.py`: 加 trades channel subscribe (现仅 book channel)
+    2. `polybot/runtime/scanner.py`: 加 `trades_cache` 类似 `book_cache`, 维护 per-cid `[cs-300, cs+330]`
+       window 内 trades; 加 fetch_trades_history fallback (cold start / cache miss)
+    3. `polybot/runtime/features.py compute_row`: 集成 `compute_pmtrades_features` 进 family pool,
+       和 PM / BN / basis 同等 merge
+  - Effort 半天-1 天. ws 优雅 (无 lag, 跟 book 一致 push 模式)
+  - 之前: 加 fetch trades API + pagination + in-script ts filter (PM /trades 不支持 startTime/endTime)
+  - 验证: scanner 重启后看 P1-P4 + R2 是否真 trigger (log 无 NotImplementedError)
+
+- **[NEXT-2] paper graduation 等 sample**
+  - R4 仍正常 (BN features), n=69 → 200 估 1 个月
+  - R2 + P1-P4 待 NEXT-1 fix 后才能继续累 sample
 
 - **[NEXT-2] build_features 改 incremental** — 30-45 min → 30-60s (~50× 加速)
   - 每 source builder 加 "read existing, compute only missing (cid,cs)"; transforms 需 feed last 2016 events 作 context

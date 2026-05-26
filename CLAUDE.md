@@ -11,15 +11,16 @@
 - **No blackbox** 永远不要给用户黑箱操作。每一步操作都要解释**为什么**这么做，底层原理是什么。用户要靠这套系统谋生，必须能逐行理解每一行在干什么。不解释的执行 = 不合格。
 - **No third-party wrapper SDK** 涉及真金白银的依赖只用官方SDK（V2 era：`py-clob-client-v2`，V1 cutover 4/28/2026 后 V1 SDK `py-clob-client` 已不能签名 V2 orders）。禁止安装第三方 wrapper / "便利包"（如 polymarket-apis, polybot-toolkit, awesome-pm 等高 star 但非官方的封装），X/Reddit 已多人中招报告 backdoor / 私钥窃取 / silently 改 order params。官方 SDK 与直接调用 PM endpoints (httpx) 都允许：CLOB 写操作（下单 / cancel / withdraw）必须用官方 SDK；公开 read endpoint（Gamma metadata, CLOB prices-history 等）httpx 手写也可，不强制 SDK。
 - **Deploy safety** 本地（/home/polymarket_work/polybot/）为开发环境，VPS（/opt/polybot/）为生产环境。部署时只推代码文件，**严禁覆盖VPS上的polybot.db**，数据库是不可替代的数据资产。部署统一使用 `bash /home/polymarket_work/deploy.sh`（rsync + systemctl restart），禁止手动 scp 或重复编写部署脚本。
-- **DB 职责隔离 (dev vs prod, 两 db 各司其职, 永不混)**:
+- **DB 职责隔离 (本地全 `/home/polymarket_work/db/`, 各司其职, 永不混)**:
   | DB 路径 | 角色 | 内容 | 谁写 |
   |---|---|---|---|
   | `/home/polymarket_work/db/pm_btc5m.db` | **dev / research workspace** | raw ingest (events, trades, binance_*), mining (factors, mining_runs), analysis (paper_candidates), decision audit (factor_decisions) | mining 脚本 + 分析脚本, 本地 only |
-  | `/opt/polybot/polybot.db` (VPS) / `/home/polymarket_work/polybot/polybot.db` (本地空 schema) | **prod / paper-trade runtime** | **只**记录 paper trade 实战数据 (paper_trade_5m_binary 等) | scanner.py 运行时写 |
+  | `/home/polymarket_work/db/polybot_live.db` | **VPS prod sync 本地副本 (read-only)** | paper_trade_5m_binary, feature_history (镜像) | `bash sync_paper_db.sh` rsync 自 VPS |
+  | `/opt/polybot/polybot.db` (VPS) | **prod runtime SSOT** | scanner.py 实时写入 paper / live trade | scanner.py on VPS |
   
-  ❌ 禁止: 把 mining/analysis 表加到 polybot.db, 或把 paper trade 表加到 pm_btc5m.db.
-  ❌ 禁止: 跨 db 互查 (e.g. polybot.db join 到 factor_decisions). 决策表查 pm_btc5m.db, paper 表查 polybot.db, 不互通.
-  ✓ 推荐: 同步 VPS polybot.db 到本地用 `bash sync_paper_db.sh` (rsync 拉到 backups/, 不覆盖本地 schema 文件).
+  ❌ 禁止: 把 mining/analysis 表加到 polybot 实战 db, 或把 paper trade 表加到 pm_btc5m.db.
+  ❌ 禁止: 跨 db 互查 (e.g. polybot_live.db join 到 factor_decisions). 决策表查 pm_btc5m.db, paper 表查 polybot_live.db, 不互通.
+  ✓ 推荐: `bash sync_paper_db.sh` 同步 VPS polybot.db → 本地 `db/polybot_live.db`. 不覆盖 pm_btc5m.db.
   ✓ 推荐: dev → prod 决策传递走**代码** (strategies.py 改 ACTIVE) + deploy.sh, **不**走 db 同步.
 - **API docs workflow (强制顺序, 不可跳步)**:
   1. **llms.txt 是 master index (主目录)**: https://docs.polymarket.com/llms.txt 列出**所有** endpoint docs + operational docs (rate-limits, changelog, errors, schemas, host 列表). 任何 API 决策**第一步 fetch llms.txt**, 在里面 grep 关键词 (rate / batch / fidelity / trades / book ...), 才 follow 具体页 link. **不要凭印象猜 URL 路径**, 也不要把 llms.txt 当普通页平等对待 — 它是入口, 其它都是从它索引出去的子页.

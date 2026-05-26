@@ -28,14 +28,17 @@ class Direction(str, Enum):
 
 
 class PaperTrade5mBinary(SQLModel, table=True):
-    """One row per triggered candle — 3 parallel tracks: backtest / paper / live.
+    """One row per triggered candle — 2 parallel tracks: paper / live.
+
+    bt (backtest) track removed 2026-05-26: bt ep was obsolete fidelity=1 mid-price
+    method, drift vs paper meaningless. Now derived on-demand via PM /trades endpoint
+    in scratch/research/compute_drift.py (trades = reproducible truth, no schema churn).
 
     PnL semantics (our side):
         win  → entry → 1.0   pnl_ratio = (1-entry)/entry
         loss → entry → 0.0   pnl_ratio = -1.0
-    *_ratio = fraction (0.05 = 5%);  *_usd = dollars. Gross columns are pre-fee
-    (kept gross so drift vs backtest stays apples-to-apples); *_net columns
-    subtract the PM taker fee (friction SSOT: polybot/lib/friction.py).
+    *_ratio = fraction (0.05 = 5%);  *_usd = dollars. Gross columns are pre-fee;
+    *_net columns subtract PM taker fee (friction SSOT: polybot/lib/friction.py).
     """
     __tablename__ = "paper_trade_5m_binary"
 
@@ -61,12 +64,10 @@ class PaperTrade5mBinary(SQLModel, table=True):
     # ---- sizing input ----
     size_usd_intended: float                  # Kelly target notional; paper + live share it
 
-    # ---- backtest track: CLOB /prices-history fidelity=1, carry-forward ----
-    p_up_at_entry_backtest: float             # UP price at cs+entry_offset_s (cross-direction baseline)
-    entry_price_backtest: float               # our side; UP→p_up, DOWN→1-p_up
-    trigger_features_backtest: str            # JSON snapshot of evaluated features
-    pnl_ratio_backtest: float | None = None
-    pnl_usd_backtest: float | None = None
+    # ---- bt track REMOVED 2026-05-26 — derived on-demand via PM /trades endpoint
+    # (reproducible truth). See scratch/research/compute_drift.py.
+    # Dropped cols: p_up_at_entry_backtest, entry_price_backtest, trigger_features_backtest,
+    #               pnl_ratio_backtest, pnl_usd_backtest, pnl_ratio_drift_paper_backtest.
 
     # ---- paper track: ws CLOB book channel, both sides recorded for arb_gap analysis ----
     book_bid_up: float | None = None
@@ -97,8 +98,7 @@ class PaperTrade5mBinary(SQLModel, table=True):
     redeem_tx: str | None = None              # redeem tx hash, or 'external'; unsuffixed —
     #                                           redeem.py depends on this name, redeem is live-only
 
-    # ---- cross-track drift  (drift_A_B = A − B) ----
-    pnl_ratio_drift_paper_backtest: float | None = None
+    # ---- cross-track drift  (drift_A_B = A − B). bt-drift removed (computed in script).
     pnl_ratio_drift_live_paper: float | None = None
 
     # ---- outcome (line-agnostic) ----
