@@ -14,30 +14,25 @@
 
 ## NEXT (顺序)
 
-- **[NEXT-1] 用 trade-based bt 重对账 R2 / H5** — drift script `compute_drift.py` 已就绪
-  - bt cols 已删, drift on-demand 重算 (PM trades reproducible truth)
-  - R2 / H5 (killed) 历史 paper trade 跟 trade-based bt 对账, 验证 drift 在 1-2% 区间
-  - 比之前 mid-price-based drift (R4=6.62% 假数) 真实多
-
-- **[NEXT-2] paper graduation 等 sample**
+- **[NEXT-1] paper graduation 等 sample**
   - R4 BN features 一直工作, n=69 → 200 估 1 个月
   - R2 + P1-P4 已修 (scanner pmtrades integration 完成), 开始累 sample
   - P3 + P4 同 candle co-fire 已观察 (corr 0.59 sub-mechanism, 符合预期)
 
-- **[NEXT-3] Local end-to-end test workflow** — 不允许跳过
+- **[NEXT-2] Local end-to-end test workflow** — 不允许跳过
   - 改 ws / scanner runtime 后必须: `cd polybot && PYTHONPATH=.. uv run python main.py`
     跑 1-2 candle, grep ERROR, 无再 deploy
   - Deploy = production verification only, 不再 debug 迭代
 
-- **[NEXT-4] build_features 改 incremental** — 30-45 min → 30-60s (~50× 加速)
+- **[NEXT-3] build_features 改 incremental** — 30-45 min → 30-60s (~50× 加速)
   - 每 source builder 加 "read existing, compute only missing (cid,cs)"; transforms 需 feed last 2016 events 作 context
   - 触发: 下次 ingest cycle 觉得 45 min 不能忍
 
-- **[NEXT-5] gate-check 代码化** — 每 factor 算 n/EV/std/t, checkpoint 自动判 GRADUATE/KILL
+- **[NEXT-4] gate-check 代码化** — 每 factor 算 n/EV/std/t, checkpoint 自动判 GRADUATE/KILL
   - 加 db 表 `factor_paper_progress` + script 自动评
   - 触发: paper 有新 factor 入 ACTIVE 后
 
-- **[NEXT-6] transforms.py SSOT-ify** — mining batch pandas vs polybot per-event 不同 paradigm
+- **[NEXT-5] transforms.py SSOT-ify** — mining batch pandas vs polybot per-event 不同 paradigm
   - 当前 windows/min_periods constants 已 delegate (TRANSFORM_SPEC), math impl 仍 parallel
   - 选项: (a) polybot 加 batch compute_zs_batch / compute_rank_batch, mining 用之; (b) 加 differential test catch byte-diff
   - 不阻塞 — pandas rolling vs polybot math 实测 byte-equal (verify_compute_ssot 已 cover)
