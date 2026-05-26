@@ -14,25 +14,49 @@
 
 ## NEXT (顺序)
 
-- **[NEXT-1] paper graduation 等 sample**
+- **[NEXT-1 CRITICAL] mining nev formula → per-$1 PnL semantics (systemic bug from cycle 1)**
+  - 现状: mining `nev = wr - mep` 是 **per-share** PnL (bet 1 share, win 拿 $1, share价 $ep → PnL $(1-ep))
+  - 应改: PM 实际 bet $1 capital, 拿 1/ep shares → per-$1 PnL = (1-ep)/ep if won else -1
+  - **Magnitude 缩水**: ep=0.5 缩 2×, ep=0.7 缩 1.43×, ep=0.83 缩 1.20× (+Jensen 效应更大)
+  - 系统性 under-rank low-ep (underdog) strategies. R4 mining 3.34% 真 PnL 10.53%
+  - 跟 paper / settle / compute_drift 算法一直不一致 (paper 一直用真 PnL)
+  - **Fix scope (Path A 彻底):**
+    1. `scratch/research/mine_gpu.py` Phase A/B 改 per-event PnL formula:
+       ```python
+       pnl = cp.where(up_won, (1-ep_up)/cp.maximum(ep_up, 1e-10), -1)
+       gross_ev = sum(M_iv * pnl[None,:]) / n_hit
+       ```
+    2. `polybot/lib/gates.py` thresholds recalibrate:
+       BT_CROSS_BUCKET_NET_EV: 0.07 (mining nev) → 0.10 (true PnL nev) — TBD by re-mine
+       PAPER_TO_LIVE_NET_EV: 0.05 → clarify (已经是 per-$1 因 paper 用真 PnL ✓)
+    3. Re-mine 全 historical cycles (paper_pick7, 2pred, cross_era_relaxed) → true PnL nev
+    4. Re-INSERT paper_candidates with new cycle_tag, drop stale rows
+    5. Verify deploy.sh hook: 加 differential test 确保 mining / paper / drift formula 三处一致
+  - **R-series decision review** (基于 true PnL bt):
+    - R4: true_pnl bt +10.53% / paper +13.66% ✓ — **NOT KILL, 之前 wrong call**
+    - R2: true_pnl bt +1.93% / paper +12% — marginal noise, keep paper
+    - H5: true_pnl bt -2.00% — killed ✓
+  - 等 user 主动开作业 (compact session 后)
+
+- **[NEXT-2] paper graduation 等 sample**
   - R4 BN features 一直工作, n=69 → 200 估 1 个月
   - R2 + P1-P4 已修 (scanner pmtrades integration 完成), 开始累 sample
   - P3 + P4 同 candle co-fire 已观察 (corr 0.59 sub-mechanism, 符合预期)
 
-- **[NEXT-2] Local end-to-end test workflow** — 不允许跳过
+- **[NEXT-3] Local end-to-end test workflow** — 不允许跳过
   - 改 ws / scanner runtime 后必须: `cd polybot && PYTHONPATH=.. uv run python main.py`
     跑 1-2 candle, grep ERROR, 无再 deploy
   - Deploy = production verification only, 不再 debug 迭代
 
-- **[NEXT-3] build_features 改 incremental** — 30-45 min → 30-60s (~50× 加速)
+- **[NEXT-4] build_features 改 incremental** — 30-45 min → 30-60s (~50× 加速)
   - 每 source builder 加 "read existing, compute only missing (cid,cs)"; transforms 需 feed last 2016 events 作 context
   - 触发: 下次 ingest cycle 觉得 45 min 不能忍
 
-- **[NEXT-4] gate-check 代码化** — 每 factor 算 n/EV/std/t, checkpoint 自动判 GRADUATE/KILL
+- **[NEXT-5] gate-check 代码化** — 每 factor 算 n/EV/std/t, checkpoint 自动判 GRADUATE/KILL
   - 加 db 表 `factor_paper_progress` + script 自动评
   - 触发: paper 有新 factor 入 ACTIVE 后
 
-- **[NEXT-5] transforms.py SSOT-ify** — mining batch pandas vs polybot per-event 不同 paradigm
+- **[NEXT-6] transforms.py SSOT-ify** — mining batch pandas vs polybot per-event 不同 paradigm
   - 当前 windows/min_periods constants 已 delegate (TRANSFORM_SPEC), math impl 仍 parallel
   - 选项: (a) polybot 加 batch compute_zs_batch / compute_rank_batch, mining 用之; (b) 加 differential test catch byte-diff
   - 不阻塞 — pandas rolling vs polybot math 实测 byte-equal (verify_compute_ssot 已 cover)
