@@ -2,8 +2,14 @@
 # Deploy polybot code to VPS. Never touches polybot.db or .venv.
 set -e
 
-echo "=== Regen BASE_COLS from features.parquet (SSOT codegen) ==="
+echo "=== SSOT verify: mining ↔ polybot.lib.compute byte-equal ==="
 cd /home/polymarket_work
+uv run python scratch/tools/verify_compute_ssot.py --n-events 30
+# Fails (exit 1) if mining batch impl diverges from polybot per-event impl.
+# Common cause: someone added math to mining/features/<x>.py without delegating
+# to polybot.lib.compute, or modified polybot without re-syncing mining.
+
+echo "=== Regen BASE_COLS from features.parquet (SSOT codegen) ==="
 uv run python scratch/tools/gen_base_cols.py
 
 echo "=== Deploying to VPS ==="
