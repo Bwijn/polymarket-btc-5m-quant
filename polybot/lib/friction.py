@@ -1,16 +1,12 @@
 """PM friction model SSOT — shared by polybot scanner + mining + analysis.
 
-Two structural costs only. No "latency / staleness buffer" — backtest is
-idealized by definition, paper's purpose is to MEASURE drift empirically.
-Adding a buffer to backtest = double-counting against paper's own measurement.
-
   - Component 1: PM taker fee (precise, formula-based)
-  - Component 2: Spread cross (taker pays ask, backtest assumes mid)
+  - Component 2: bt → paper drift (empirical, see polybot/lib/gates.py)
+                 only applied in backtest context (paper IS the real exec).
 
 Anywhere else that needs friction (view, scanner.settle_one, mining net_ev,
-analysis SQL constants), MUST reference this file. Don't hardcode 0.07 /
-0.015 anywhere else — `grep` for those values periodically; if found
-elsewhere, refactor to import from here.
+analysis SQL constants), MUST reference this file. Don't hardcode 0.07
+anywhere else — `grep` periodically and refactor to import.
 
 Why one module not multiple constants scattered:
   - PM rate changed before (0.072 → 0.07) — caught only by chance probe.
@@ -61,27 +57,26 @@ def fee_ratio(entry_price: float, rate: float = PM_FEE_RATE_CRYPTO) -> float:
 
 
 # ============================================================================
-# Component 2: Spread cross (theoretical, taker pays ask not mid)
+# Component 2: bt → paper drift (empirical, applied only in backtest context)
 # ============================================================================
-# Constant estimate. Real spread varies by market liquidity but our paper
-# data on btc-updown-5m shows roughly 0.01-0.03 typical, with wider tails.
-# Used by backtest only — paper's entry_price_paper = book_ask already
-# embeds spread, so paper friction does NOT add this.
+# Sourced from polybot/lib/gates.py BT_TO_PAPER_DRIFT (measured 2026-05-25 on
+# R2 / R4 / H5 paper trades, conservative round up). Paper = actual exec, no
+# drift; bt = estimate, drift haircuts toward paper-implied.
+#
+# History (git audit, not for code reference):
+# - Pre-2026-05-24: bt friction = fee + spread (mid-price era, +1.5% spread cross)
+# - 2026-05-24: trade-based ep → bt friction = fee only (spread embedded in ask)
+# - 2026-05-25: drift measured → bt friction = fee + drift (paper-implied)
 
-SPREAD_CROSS_RATIO = 0.015
+from polybot.lib.gates import BT_TO_PAPER_DRIFT
 
-
-# ============================================================================
-# Composers — context-aware total friction
-# ============================================================================
 
 def paper_friction_ratio(
     entry_price: float,
     rate: float = PM_FEE_RATE_CRYPTO,
 ) -> float:
-    """Friction for paper data (entry_price_paper = book_ask).
-
-    Spread is ALREADY embedded in book_ask. So paper friction = fee only.
+    """Friction for paper data (entry_price_paper = book_ask, real exec price).
+    Spread embedded in book_ask, no drift (this IS the actual paid price) → fee only.
     """
     return fee_ratio(entry_price, rate)
 
@@ -90,13 +85,14 @@ def backtest_friction_ratio(
     entry_price: float,
     rate: float = PM_FEE_RATE_CRYPTO,
 ) -> float:
-    """Friction for backtest data (entry_price_backtest = prices-history mid).
+    """Friction for backtest data (entry_price_backtest = trade-based ep estimate).
+    = fee + BT_TO_PAPER_DRIFT (empirical haircut for paper paying more than bt expected).
 
-    Includes fee + spread (backtest's mid doesn't embed spread cost).
-    No "latency / staleness buffer" — backtest is idealized by design,
-    paper measures drift empirically.
+    Caller intent: subtract this from gev to get nev that approximates paper EV.
+    Equivalent to: bt nev = bt gev − fee − drift
+                 ≈ paper-implied nev (after drift correction)
     """
-    return fee_ratio(entry_price, rate) + SPREAD_CROSS_RATIO
+    return fee_ratio(entry_price, rate) + BT_TO_PAPER_DRIFT
 
 
 def friction_breakdown(
@@ -105,15 +101,18 @@ def friction_breakdown(
     context: str = "backtest",      # 'paper' | 'backtest'
     rate: float = PM_FEE_RATE_CRYPTO,
 ) -> dict[str, float]:
-    """Itemized friction for inspection / logging."""
+    """Itemized friction for inspection / logging.
+    'paper'   : fee only (real exec, drift = 0)
+    'backtest': fee + drift (bt estimate, drift haircuts toward paper-implied)
+    """
     fee = fee_ratio(entry_price, rate)
     if context == "paper":
-        spread = 0.0
+        drift = 0.0
     elif context == "backtest":
-        spread = SPREAD_CROSS_RATIO
+        drift = BT_TO_PAPER_DRIFT
     else:
         raise ValueError(f"unknown context {context!r}")
-    return {"fee": fee, "spread": spread, "total": fee + spread}
+    return {"fee": fee, "drift": drift, "total": fee + drift}
 
 
 # ============================================================================
@@ -128,19 +127,18 @@ if __name__ == "__main__":
     assert abs(fee_ratio(0.3) - fee_ratio(0.7) * (0.7/0.3)) > 0     # asymmetric in ratio terms
     # but symmetric in absolute USDC: 0.07 × 0.3 × 0.7 == 0.07 × 0.7 × 0.3 ✓ inherent in formula
 
-    # paper_friction_ratio: only fee
-    assert paper_friction_ratio(0.6) == fee_ratio(0.6)
+    # 2026-05-25: bt friction = fee + DRIFT (paper-implied), paper = fee only (real exec)
+    assert paper_friction_ratio(0.6)    == fee_ratio(0.6)
+    assert backtest_friction_ratio(0.6) == fee_ratio(0.6) + BT_TO_PAPER_DRIFT
+    assert backtest_friction_ratio(0.6) - paper_friction_ratio(0.6) == BT_TO_PAPER_DRIFT
 
-    # backtest_friction_ratio: fee + spread (no latency buffer)
-    assert abs(backtest_friction_ratio(0.6) - 0.043) < 1e-9     # 2.8% + 1.5%
-
-    # friction_breakdown context branches
+    # friction_breakdown
     bd_p = friction_breakdown(0.6, context="paper")
     bd_b = friction_breakdown(0.6, context="backtest")
-    assert bd_p["spread"] == 0.0
-    assert bd_b["spread"] == SPREAD_CROSS_RATIO
-    assert bd_p["fee"] == bd_b["fee"]                   # fee identical across contexts
-    assert bd_p["total"] < bd_b["total"]                # paper has less friction (spread already in book_ask)
+    assert bd_p["drift"] == 0.0
+    assert bd_b["drift"] == BT_TO_PAPER_DRIFT
+    assert bd_p["fee"] == bd_b["fee"] == fee_ratio(0.6)
+    assert bd_b["total"] == bd_p["total"] + BT_TO_PAPER_DRIFT
 
     # Cross-rate sanity
     assert PM_FEE_RATES["Crypto"]      == 0.07
@@ -148,6 +146,5 @@ if __name__ == "__main__":
 
     print("friction: OK")
     print(f"  fee_ratio(0.6)         = {fee_ratio(0.6):.4f}  (2.8%)")
-    print(f"  fee_ratio(0.5)         = {fee_ratio(0.5):.4f}  (3.5%, max)")
-    print(f"  paper_friction(0.6)    = {paper_friction_ratio(0.6):.4f}      (fee only)")
-    print(f"  backtest_friction(0.6) = {backtest_friction_ratio(0.6):.4f}      (fee + spread)")
+    print(f"  paper_friction(0.6)    = {paper_friction_ratio(0.6):.4f}  (fee only, real exec)")
+    print(f"  backtest_friction(0.6) = {backtest_friction_ratio(0.6):.4f}  (fee + drift {BT_TO_PAPER_DRIFT:.1%} → paper-implied)")

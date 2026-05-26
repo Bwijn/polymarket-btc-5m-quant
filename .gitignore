@@ -29,4 +29,8 @@ __pycache__/
 # scratch (mining experiments, hypothesis dirs, factor_lab probes)
 # rationale: focus polybot/. scratch is personal workspace, not source-of-truth.
 /scratch/
+
+# dev DB workspace (pm_btc5m.db 60GB+, ingested research data, never commit)
+/db/
+
 .claude/scheduled_tasks.lock

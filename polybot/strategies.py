@@ -27,12 +27,15 @@ class Strategy:
 # rank = paper_candidates.rank in pm_btc5m.db.
 
 # R2: PM intra + slope_pre__rank24h. bt_nev=+8.45%, trig=3.9%, wr=81.0%, mean_ep=0.70
+# 2026-05-24 — DEMOTED to paper-only. drift-fixed bt 重 mine 显示真 bt nev ≈ −0.8% (V1) / −0.2% (V2),
+# friction (~3.9% @ mep 0.66) 吃光 gross_ev +3%. Paper +10.78% @ n=76 是 sample 噪声 (last 30 已 decay
+# 到 +0.38%). 继续 paper 观察至 cap (~800 单) 或 8 周, 自然到 KILL.
 R2 = Strategy(
     'R2',
     'min_intra_90_dn<0.3700000047683716 & slope_pre_60_dn__rank24h<0.1111111119389534',
     entry_offset_s=90,
     direction='UP',
-    live=True,
+    live=False,
 )
 
 # R4: bn_taker + bn_vol_zscore__zs24h. bt_nev=+7.53%, trig=4.0%, wr=63.1%, mean_ep=0.51 (drift-safe)
