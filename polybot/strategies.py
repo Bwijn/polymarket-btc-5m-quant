@@ -26,16 +26,11 @@ class Strategy:
 # bt audit lives in paper_candidates table — query for nev / n_hit / cycle_tag etc.
 # Comments here only carry live-status / KILL rationale (info not in db).
 
-# R2 — DEMOTED to paper-only 2026-05-24 (drift-fixed bt re-mine showed nev negative;
-# paper sample 继续累至 cap/8 周自然 KILL)
-R2 = Strategy(
-    'R2',
-    'min_intra_90_dn<0.3700000047683716 & slope_pre_60_dn__rank24h<0.1111111119389534',
-    entry_offset_s=90,
-    direction='UP',
-    live=False,
-)
-
+# R4 — sole survivor of per-$1 re-eval (2026-06-01). even-money ep≈0.51.
+# per-$1 bt V2(OOS) +19.9% ↔ paper +21.2% (n=126, t=2.52) — bt 预测 paper, drift-fix
+# 验证成立. 过 paper→live gate (t>1.65 ∧ nev≥5%). graduate 候选, 待 magnitude CI 收窄.
+# 同 cycle 5 个 (R2/P1-P4) per-$1 OOS+paper 双弱 → killed (factor_decisions 2026-06-01).
+# id='R4' grandfathered (历史 paper 行连续); 未来 factor 弃 abbreviation, 按 expr 索引.
 R4 = Strategy(
     'R4',
     'bn_taker_buy_ratio_pre_300>0.7554713487625122 & bn_vol_zscore_pre_60__zs24h>0.3679429590702057',
@@ -43,36 +38,7 @@ R4 = Strategy(
     direction='DOWN',
 )
 
-# P-series — paper_candidates cycle_tag='2pred_rep_20260526'. bt audit in db.
-P1 = Strategy(
-    'P1',
-    'delta_intra_60_dn>0.18000000715255737 & max_intra_30_dn__zs7d>1.666505217552185',
-    entry_offset_s=60,
-    direction='DOWN',
-)
-
-P2 = Strategy(
-    'P2',
-    'delta_intra_60_up<-0.2800000011920929 & delta_intra_30_up<-0.10999999940395355',
-    entry_offset_s=60,
-    direction='DOWN',
-)
-
-P3 = Strategy(
-    'P3',
-    'max_intra_30_up>0.7400000095367432 & delta_intra_60_dn__zs7d<-0.8927792906761169',
-    entry_offset_s=60,
-    direction='UP',
-)
-
-P4 = Strategy(
-    'P4',
-    'delta_intra_60_dn__zs7d<-0.48432302474975586 & mean_intra_30_up>0.608535885810852',
-    entry_offset_s=60,
-    direction='UP',
-)
-
-ACTIVE: tuple[Strategy, ...] = (R2, R4, P1, P2, P3, P4)
+ACTIVE: tuple[Strategy, ...] = (R4,)
 
 
 if __name__ == '__main__':
