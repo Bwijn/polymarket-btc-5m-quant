@@ -19,7 +19,12 @@ from .constants import (
 
 
 def _pmt_entry_prices(rows: list, cs: int, up_tok: str, dn_tok: str) -> dict:
-    """Group 1+1d: entry price + staleness + delta vs internal pre-cs open."""
+    """Entry price snapshot = last BUY in [target-5, target] for each entry_t X.
+    Past-only (P4 fix 2026-05-26): 旧 ±5s symmetric 数值差小, 但 mining DB 见
+    未来 trade vs scanner TradesCache 只见过去 trade → 同 SSOT fn 喂不同 input
+    shape, 结果天然 drift, runtime unreproducible. 改 past-only 让 mining/scanner
+    algo + 数据 shape 双对齐.
+    Fallback: 窗内无 BUY → 最近一笔 ≤ target BUY (任意 age) as stale snapshot."""
     out = {}
     for sfx, tok in (('up', up_tok), ('dn', dn_tok)):
         buys = [r for r in rows if r[_SIDE] == 'BUY' and r[_ASSET] == tok]
@@ -28,10 +33,10 @@ def _pmt_entry_prices(rows: list, cs: int, up_tok: str, dn_tok: str) -> dict:
         )
         for X in PMT_ENTRY_GRID:
             target = cs + X
-            cands = [r for r in buys if abs(r[_TS] - target) <= PMT_ENTRY_W]
+            cands = [r for r in buys if (target - PMT_ENTRY_W) <= r[_TS] <= target]
             if cands:
                 nearest = min(cands, key=lambda r: abs(r[_TS] - target))
-                p, stale = float(nearest[_PRICE]), abs(nearest[_TS] - target)
+                p, stale = float(nearest[_PRICE]), float(target - nearest[_TS])
             else:
                 prev = next((r for r in reversed(buys) if r[_TS] <= target), None)
                 if prev:
@@ -82,11 +87,17 @@ def _pmt_chg_rate(rows: list, cs: int, up_tok: str, dn_tok: str) -> dict:
 
 
 def _pmt_flow_imbalance(rows: list, cs: int, up_tok: str, dn_tok: str) -> dict:
+    """Flow imbalance over past 2s before cs+X. Past-only (P4 fix 2026-05-26):
+    旧 abs(ts-target) ≤ 2 含未来 2s, SUM 聚合下未来 trades 结构性贡献 ~50%
+    → mining 跟 scanner runtime 数值不一致. 改 (target-2, target] past-only,
+    跟 scanner TradesCache (无未来 trade 可见) 行为一致.
+    Col name 仍 `_5s_` (legacy naming, 不破 _base_cols / strategies SSOT)."""
     out = {}
     for sfx, tok in (('up', up_tok), ('dn', dn_tok)):
         for X in PMT_FLOW_IMB_X:
             target = cs + X
-            seg = [r for r in rows if r[_ASSET] == tok and abs(r[_TS] - target) <= 2]
+            seg = [r for r in rows
+                   if r[_ASSET] == tok and (target - 2) <= r[_TS] <= target]
             buys = sum(r[_SIZE] for r in seg if r[_SIDE] == 'BUY')
             sells = sum(r[_SIZE] for r in seg if r[_SIDE] == 'SELL')
             tot = buys + sells
@@ -175,10 +186,13 @@ def _pmt_wallets(rows: list, cs: int, up_tok: str, dn_tok: str) -> dict:
 
 
 def _pmt_spread_proxy(rows: list, cs: int, up_tok: str, dn_tok: str) -> dict:
+    """spread proxy = last_BUY - last_SELL over past 15s before cs+X. Past-only
+    (P4 fix 2026-05-26): 旧 ±15s symmetric 双向 last 都可能落未来段, 双 leak.
+    改 [cs+X-15, cs+X] past-only, 跟 scanner runtime 行为一致."""
     out = {}
     for sfx, tok in (('up', up_tok), ('dn', dn_tok)):
         for X in PMT_SPREAD_X:
-            lo, hi = cs + X - PMT_SPREAD_W, cs + X + PMT_SPREAD_W
+            lo, hi = cs + X - PMT_SPREAD_W, cs + X     # past-only
             last_buy = next((r[_PRICE] for r in reversed(rows)
                              if r[_ASSET] == tok and r[_SIDE] == 'BUY' and lo <= r[_TS] <= hi), None)
             last_sell = next((r[_PRICE] for r in reversed(rows)
@@ -207,7 +221,7 @@ def _pmt_cross_token(rows: list, cs: int, up_tok: str, dn_tok: str) -> dict:
 
 
 def _pmt_coarse_retained(rows: list, cs: int, up_tok: str, dn_tok: str) -> dict:
-    """Original 11 coarse cols (kept for backward compat with any older factor)."""
+    """Coarse pre-only cols (legacy 9-col set, eoc 30s leak family dropped 2026-05-26)."""
     out = {}
     for w in (60, 300):
         seg = [r for r in rows if cs - w <= r[_TS] < cs]
@@ -220,12 +234,6 @@ def _pmt_coarse_retained(rows: list, cs: int, up_tok: str, dn_tok: str) -> dict:
             sells = sum(r[_SIZE] for r in seg if r[_SIDE] == 'SELL' and r[_ASSET] == tok)
             tot = buys + sells
             out[f'pmt_imbalance_pre_{w}_{sfx}'] = (buys - sells) / tot if tot > 0 else np.nan
-    seg_eoc = [r for r in rows if cs + 270 <= r[_TS] < cs + 300]
-    for sfx, tok in (('up', up_tok), ('dn', dn_tok)):
-        buys = sum(r[_SIZE] for r in seg_eoc if r[_SIDE] == 'BUY' and r[_ASSET] == tok)
-        sells = sum(r[_SIZE] for r in seg_eoc if r[_SIDE] == 'SELL' and r[_ASSET] == tok)
-        tot = buys + sells
-        out[f'pmt_eoc_imbalance_30_{sfx}'] = (buys - sells) / tot if tot > 0 else np.nan
     return out
 
 
@@ -274,8 +282,6 @@ def _pmt_nan_record() -> dict:
         out[f'pmt_large_count_pre_{w}'] = 0
         for sfx in ('up', 'dn'):
             out[f'pmt_imbalance_pre_{w}_{sfx}'] = np.nan
-    out['pmt_eoc_imbalance_30_up'] = np.nan
-    out['pmt_eoc_imbalance_30_dn'] = np.nan
     return out
 
 
