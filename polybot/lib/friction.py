@@ -85,14 +85,15 @@ def backtest_friction_ratio(
     entry_price: float,
     rate: float = PM_FEE_RATE_CRYPTO,
 ) -> float:
-    """Friction for backtest data (entry_price_backtest = trade-based ep estimate).
-    = fee + BT_TO_PAPER_DRIFT (empirical haircut for paper paying more than bt expected).
-
-    Caller intent: subtract this from gev to get nev that approximates paper EV.
-    Equivalent to: bt nev = bt gev − fee − drift
-                 ≈ paper-implied nev (after drift correction)
-    """
-    return fee_ratio(entry_price, rate) + BT_TO_PAPER_DRIFT
+    """Friction for backtest data — drift applied to ep, not as flat additive
+    (P5 fix 2026-05-26):
+      paper_ep ≈ bt_ep + BT_TO_PAPER_DRIFT (measured 1.5c/share)
+      friction = fee_ratio(paper_ep) since paper pays fee on real ep, not bt ep.
+    Caller must also use (ep + DRIFT) in PnL pred term (mining mine_gpu.py); fee
+    side handled here. Pre-P5 was `fee(ep) + 0.015` flat — numerically近 favorite
+    ep~0.83 (coincidence ~1.5% PnL haircut), wrong for ep < 0.6 (under-haircut
+    sharply due to 1/ep nonlinearity)."""
+    return fee_ratio(entry_price + BT_TO_PAPER_DRIFT, rate)
 
 
 def friction_breakdown(
@@ -102,17 +103,16 @@ def friction_breakdown(
     rate: float = PM_FEE_RATE_CRYPTO,
 ) -> dict[str, float]:
     """Itemized friction for inspection / logging.
-    'paper'   : fee only (real exec, drift = 0)
-    'backtest': fee + drift (bt estimate, drift haircuts toward paper-implied)
+    'paper'   : fee only on real ep (drift = 0, real exec)
+    'backtest': fee on (ep + drift) — drift applied to ep first (P5)
     """
-    fee = fee_ratio(entry_price, rate)
+    fee_paper = fee_ratio(entry_price, rate)            # ep-only fee
     if context == "paper":
-        drift = 0.0
-    elif context == "backtest":
-        drift = BT_TO_PAPER_DRIFT
-    else:
-        raise ValueError(f"unknown context {context!r}")
-    return {"fee": fee, "drift": drift, "total": fee + drift}
+        return {"fee": fee_paper, "drift_fee_delta": 0.0, "total": fee_paper}
+    if context == "backtest":
+        fee_bt = fee_ratio(entry_price + BT_TO_PAPER_DRIFT, rate)
+        return {"fee": fee_paper, "drift_fee_delta": fee_bt - fee_paper, "total": fee_bt}
+    raise ValueError(f"unknown context {context!r}")
 
 
 # ============================================================================
@@ -127,24 +127,27 @@ if __name__ == "__main__":
     assert abs(fee_ratio(0.3) - fee_ratio(0.7) * (0.7/0.3)) > 0     # asymmetric in ratio terms
     # but symmetric in absolute USDC: 0.07 × 0.3 × 0.7 == 0.07 × 0.7 × 0.3 ✓ inherent in formula
 
-    # 2026-05-25: bt friction = fee + DRIFT (paper-implied), paper = fee only (real exec)
+    # P5 2026-05-26: backtest friction = fee(ep + DRIFT), drift applied to ep not as additive
     assert paper_friction_ratio(0.6)    == fee_ratio(0.6)
-    assert backtest_friction_ratio(0.6) == fee_ratio(0.6) + BT_TO_PAPER_DRIFT
-    assert backtest_friction_ratio(0.6) - paper_friction_ratio(0.6) == BT_TO_PAPER_DRIFT
+    assert backtest_friction_ratio(0.6) == fee_ratio(0.6 + BT_TO_PAPER_DRIFT)
+    # Note: bt friction < paper friction (fee shrinks as ep grows), because paper pays
+    # fee on the actual (higher) paper_ep. The dominant nev-drop comes from PnL term
+    # (1/paper_ep < 1/bt_ep), not fee. Both pieces must move together in mining.
+    assert backtest_friction_ratio(0.6) < paper_friction_ratio(0.6)
 
     # friction_breakdown
     bd_p = friction_breakdown(0.6, context="paper")
     bd_b = friction_breakdown(0.6, context="backtest")
-    assert bd_p["drift"] == 0.0
-    assert bd_b["drift"] == BT_TO_PAPER_DRIFT
-    assert bd_p["fee"] == bd_b["fee"] == fee_ratio(0.6)
-    assert bd_b["total"] == bd_p["total"] + BT_TO_PAPER_DRIFT
+    assert bd_p["drift_fee_delta"] == 0.0
+    assert bd_b["drift_fee_delta"] == fee_ratio(0.6 + BT_TO_PAPER_DRIFT) - fee_ratio(0.6)
+    assert bd_p["total"] == fee_ratio(0.6)
+    assert bd_b["total"] == fee_ratio(0.6 + BT_TO_PAPER_DRIFT)
 
     # Cross-rate sanity
     assert PM_FEE_RATES["Crypto"]      == 0.07
     assert PM_FEE_RATES["Geopolitics"] == 0.00
 
     print("friction: OK")
-    print(f"  fee_ratio(0.6)         = {fee_ratio(0.6):.4f}  (2.8%)")
-    print(f"  paper_friction(0.6)    = {paper_friction_ratio(0.6):.4f}  (fee only, real exec)")
-    print(f"  backtest_friction(0.6) = {backtest_friction_ratio(0.6):.4f}  (fee + drift {BT_TO_PAPER_DRIFT:.1%} → paper-implied)")
+    print(f"  fee_ratio(0.6)         = {fee_ratio(0.6):.4f}  (paper fee, real exec ep=0.6)")
+    print(f"  backtest_friction(0.6) = {backtest_friction_ratio(0.6):.4f}  (fee on paper_ep = 0.6 + {BT_TO_PAPER_DRIFT})")
+    print(f"  paper_friction(0.6)    = {paper_friction_ratio(0.6):.4f}  (= fee_ratio(0.6), no drift)")

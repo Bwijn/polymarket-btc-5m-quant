@@ -19,12 +19,14 @@ from __future__ import annotations
 # Stage 1: bt mining cross-bucket gate (factor survives if BOTH V1 and V2 pass)
 # ════════════════════════════════════════════════════════════════════════════
 
-BT_CROSS_BUCKET_NET_EV = 0.07
-# Why 0.07: 1-pred mining on 1500 features × 99 thresholds × 2 sides ≈ 300k tests.
-# Cross-bucket V1 ∩ V2 filter reduces winner's curse vs single-bucket. 0.07 leaves
-# safety margin: paper-implied ≈ 0.07 − drift(0.015) = 0.055 (just above Constitution
-# paper→live gate +5%). 2026-05-24 set after friction-fix re-mining produced 19
-# cross-bucket candidates at this threshold.
+BT_CROSS_BUCKET_NET_EV = 0.10
+# Why 0.10: per-$1 PnL semantics (P2 fix 2026-05-26). Previously 0.07 was
+# per-share PnL units (wr - mep), which under-counted true return by factor
+# 1/ep ≈ 1.20× for ep=0.83 favorite (and 2× for ep=0.50). Re-cast in per-$1:
+#   old 0.07 per-share @ ep=0.83 ≈ 0.084 per-$1.
+# 0.10 leaves margin above this: bt nev > 0.10 → paper-implied ≈ 0.10 − drift
+# (TBD, see BT_TO_PAPER_DRIFT below) ≥ 0.05 (PAPER_TO_LIVE_NET_EV) + variance buffer.
+# TBD: recalibrate after first per-$1 re-mine cycle (count cross-bucket survivors).
 
 MIN_N_HIT_PCT = 0.02
 # Per-bucket: factor must hit ≥ 2% of events to qualify (stat significance floor)
@@ -38,14 +40,19 @@ MIN_N_HIT_ABS = 50
 # ════════════════════════════════════════════════════════════════════════════
 
 BT_TO_PAPER_DRIFT = 0.015
-# Why 0.015 (conservative): measured 2026-05-25 across 3 factors:
-#   R2 UP   @ cs+90  n=85  drift=+1.57%  CI95 [+0.18%, +2.96%]
-#   R4 DOWN @ cs+0   n=52  drift=-0.24%  CI95 [-0.97%, +0.49%]
-#   H5 DOWN @ cs+60  n=156 drift=+0.90%  CI95 [+0.06%, +1.73%]
-#   n-weighted average: +0.91%
-# Conservative round up: 1.5% covers worst-direction observed drift with margin.
-# Re-measure when new direction/et combinations enter paper.
-# Applied as additive friction in backtest_friction_ratio (polybot/lib/friction.py).
+# 1.5% measured 2026-05-25 on R-series paper trades — **entry-price space** drift:
+# trade-based bt ep estimate vs paper book_ask ≈ +1.5 cents/share. This is the
+# entry-price gap, independent of pnl formula (per-share or per-$1).
+#
+# CAVEAT (per-$1 nev semantics, post-P2 fix 2026-05-26):
+# In per-$1 PnL space drift haircut is NOT constant — ep-dependent:
+#   ep=0.83 favorite (R-series): ~1.8% per-trade  ← 0.015 approx OK
+#   ep=0.50 even-money:          ~3.0% per-trade  ← 0.015 under-counts 2×
+#   ep=0.16 underdog:            ~16%  per-trade  ← 0.015 under-counts 10×
+# This constant is FAVORITE-CALIBRATED (R-series ep~0.83 era). For underdog
+# (ep<0.4) factors, real paper drift is much larger — those factors MUST be
+# probed for actual fillability + drift before paper deployment.
+# TODO: replace with ep-dependent function in backtest_friction_ratio.
 
 
 # ════════════════════════════════════════════════════════════════════════════
