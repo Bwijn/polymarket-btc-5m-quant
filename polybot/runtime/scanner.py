@@ -43,7 +43,51 @@ CANDLE_S = 300
 def _engine(db_path: str):
     eng = create_engine(f"sqlite:///{db_path}")
     SQLModel.metadata.create_all(eng)
+    _ensure_dashboard(eng)
     return eng
+
+
+def _ensure_dashboard(eng) -> None:
+    """Materialize ACTIVE → active_strategies table + paper_active_agg view.
+
+    Why: paper_trade_5m_binary lives in this db (polybot.db); ACTIVE lives in
+    strategies.py (code); paper_candidates lives in pm_btc5m.db (cross-db join
+    forbidden, CLAUDE.md). So mirror ACTIVE into a small table here on every
+    startup → the view auto-filters aggregation to current factors. Killed/old
+    factors drop out automatically (not in ACTIVE → not in table → not in view).
+    Deploy + restart refreshes the mirror; 0 manual drift.
+    Aggregate everything via:  SELECT * FROM paper_active_agg;
+    """
+    from sqlalchemy import text
+    with eng.begin() as c:
+        c.execute(text("CREATE TABLE IF NOT EXISTS active_strategies ("
+                       "expr TEXT PRIMARY KEY, direction TEXT, entry_offset_s INTEGER, live INTEGER)"))
+        c.execute(text("DELETE FROM active_strategies"))
+        for s in ACTIVE:
+            c.execute(text("INSERT INTO active_strategies (expr,direction,entry_offset_s,live) "
+                           "VALUES (:e,:d,:o,:l)"),
+                      {"e": s.expr, "d": s.direction, "o": s.entry_offset_s, "l": int(s.live)})
+        # net_pnl per-$1 = pnl_ratio_paper_net. t = mean·√n / sample_std (n>1 guard).
+        c.execute(text("DROP VIEW IF EXISTS paper_active_agg"))
+        c.execute(text("""CREATE VIEW paper_active_agg AS
+            SELECT a.expr, a.direction, a.live,
+                   COUNT(*) AS n,
+                   ROUND(AVG(CASE WHEN (a.direction='UP'   AND p.up_won=1)
+                                    OR (a.direction='DOWN' AND p.up_won=0)
+                                  THEN 1.0 ELSE 0.0 END), 3) AS wr,
+                   ROUND(AVG(p.pnl_ratio_paper_net), 4) AS mean_nev,
+                   ROUND(SUM(p.pnl_usd_paper_net), 2) AS sum_usd_net,
+                   CASE WHEN COUNT(*) > 1 THEN ROUND(
+                     AVG(p.pnl_ratio_paper_net) * sqrt(COUNT(*)) /
+                     sqrt((AVG(p.pnl_ratio_paper_net*p.pnl_ratio_paper_net)
+                         - AVG(p.pnl_ratio_paper_net)*AVG(p.pnl_ratio_paper_net))
+                         * COUNT(*) / (COUNT(*)-1.0)), 2)
+                   ELSE NULL END AS t,
+                   MAX(p.settled_at_s) AS last_settle_s
+            FROM paper_trade_5m_binary p
+            JOIN active_strategies a ON p.expr = a.expr
+            WHERE p.status='settled'
+            GROUP BY a.expr, a.direction, a.live"""))
 
 
 class Scanner:
