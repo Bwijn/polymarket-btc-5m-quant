@@ -85,14 +85,12 @@ def backtest_friction_ratio(
     entry_price: float,
     rate: float = PM_FEE_RATE_CRYPTO,
 ) -> float:
-    """Friction for backtest data — drift applied to ep, not as flat additive
-    (P5 fix 2026-05-26):
-      paper_ep ≈ bt_ep + BT_TO_PAPER_DRIFT (measured 1.5c/share)
+    """Friction for backtest data — drift applied to ep (not as flat additive):
+      paper_ep ≈ bt_ep + BT_TO_PAPER_DRIFT (1.5c/share)
       friction = fee_ratio(paper_ep) since paper pays fee on real ep, not bt ep.
-    Caller must also use (ep + DRIFT) in PnL pred term (mining mine_gpu.py); fee
-    side handled here. Pre-P5 was `fee(ep) + 0.015` flat — numerically近 favorite
-    ep~0.83 (coincidence ~1.5% PnL haircut), wrong for ep < 0.6 (under-haircut
-    sharply due to 1/ep nonlinearity)."""
+    Caller must also use (ep + DRIFT) in PnL pred term (mine_gpu.py); fee side
+    handled here. Applying drift in ep-space (not flat additive) makes the per-$1
+    haircut correctly ep-dependent — larger for low ep via 1/ep nonlinearity."""
     return fee_ratio(entry_price + BT_TO_PAPER_DRIFT, rate)
 
 
@@ -104,7 +102,7 @@ def friction_breakdown(
 ) -> dict[str, float]:
     """Itemized friction for inspection / logging.
     'paper'   : fee only on real ep (drift = 0, real exec)
-    'backtest': fee on (ep + drift) — drift applied to ep first (P5)
+    'backtest': fee on (ep + drift) — drift applied to ep first
     """
     fee_paper = fee_ratio(entry_price, rate)            # ep-only fee
     if context == "paper":
@@ -127,7 +125,7 @@ if __name__ == "__main__":
     assert abs(fee_ratio(0.3) - fee_ratio(0.7) * (0.7/0.3)) > 0     # asymmetric in ratio terms
     # but symmetric in absolute USDC: 0.07 × 0.3 × 0.7 == 0.07 × 0.7 × 0.3 ✓ inherent in formula
 
-    # P5 2026-05-26: backtest friction = fee(ep + DRIFT), drift applied to ep not as additive
+    # backtest friction = fee(ep + DRIFT), drift applied to ep not as additive
     assert paper_friction_ratio(0.6)    == fee_ratio(0.6)
     assert backtest_friction_ratio(0.6) == fee_ratio(0.6 + BT_TO_PAPER_DRIFT)
     # Note: bt friction < paper friction (fee shrinks as ep grows), because paper pays

@@ -20,7 +20,7 @@ from __future__ import annotations
 # ════════════════════════════════════════════════════════════════════════════
 
 BT_CROSS_BUCKET_NET_EV = 0.10
-# Why 0.10: per-$1 PnL semantics (P2 fix 2026-05-26). Previously 0.07 was
+# Why 0.10: per-$1 PnL semantics. Previously 0.07 was
 # per-share PnL units (wr - mep), which under-counted true return by factor
 # 1/ep ≈ 1.20× for ep=0.83 favorite (and 2× for ep=0.50). Re-cast in per-$1:
 #   old 0.07 per-share @ ep=0.83 ≈ 0.084 per-$1.
@@ -36,23 +36,36 @@ MIN_N_HIT_ABS = 50
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# Stage 1.5: cross-bucket survivor dedup (mining variants → independent signals)
+# ════════════════════════════════════════════════════════════════════════════
+
+FACTOR_DEDUP_OVERLAP_MAX = 0.45
+# Two same-direction factors are the SAME signal if hit-candle overlap-coef
+# |A∩B|/min(|A|,|B|) ≥ this. Set at the empty valley of the bimodal pairwise-overlap
+# distribution (cycle 2026-06-02 re-mine: independent mode ≤0.30, dup mode ≥0.85,
+# valley 0.30-0.50 near-empty → robust, T∈[0.40,0.50] = identical partition).
+# Greedy keeps one representative per independent cluster.
+
+FACTOR_DEDUP_CAPEFF_TIEBREAK = 0.15
+# Representative within a cluster = max capital-efficiency (freq×nev, freq = V2 fwd
+# hits/wk). But capeff is often flat across a cluster while nev varies ~2× → pure
+# capeff-argmax picks a fragile low-nev/high-freq extreme. Guard: among members
+# within 15% of cluster max capeff, pick the HIGHEST nev (more margin above the 5%
+# live hurdle, less decay/estimation risk). Per Constitution EV>MDD: when capeff is
+# within noise, prefer the larger, safer edge.
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # Stage 2: bt → paper drift (measured empirically, paper paid more than bt expected)
 # ════════════════════════════════════════════════════════════════════════════
 
 BT_TO_PAPER_DRIFT = 0.015
-# 1.5% measured 2026-05-25 on R-series paper trades — **entry-price space** drift:
-# trade-based bt ep estimate vs paper book_ask ≈ +1.5 cents/share. This is the
-# entry-price gap, independent of pnl formula (per-share or per-$1).
-#
-# CAVEAT (per-$1 nev semantics, post-P2 fix 2026-05-26):
-# In per-$1 PnL space drift haircut is NOT constant — ep-dependent:
-#   ep=0.83 favorite (R-series): ~1.8% per-trade  ← 0.015 approx OK
-#   ep=0.50 even-money:          ~3.0% per-trade  ← 0.015 under-counts 2×
-#   ep=0.16 underdog:            ~16%  per-trade  ← 0.015 under-counts 10×
-# This constant is FAVORITE-CALIBRATED (R-series ep~0.83 era). For underdog
-# (ep<0.4) factors, real paper drift is much larger — those factors MUST be
-# probed for actual fillability + drift before paper deployment.
-# TODO: replace with ep-dependent function in backtest_friction_ratio.
+# Fixed +1.5 cents/share execution drift in ENTRY-PRICE space (measured 2026-05-25
+# on R-series paper: trade-based bt ep vs paper book_ask). Applied in ep-space by
+# friction.backtest_friction_ratio as fee(ep + drift); mine_gpu likewise uses
+# (ep + drift) in the PnL term. Living in ep-space makes the per-$1 nev haircut
+# naturally ep-dependent (larger for low ep via 1/ep) — underdog is haircut MORE,
+# not less. Conservative by design → bt nev stays trustworthy across all ep buckets.
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -85,6 +98,8 @@ if __name__ == "__main__":
     live_gate = PAPER_TO_LIVE_NET_EV
     assert paper_implied >= live_gate - 0.001, \
         f"chain broken: bt {bt} − drift {BT_TO_PAPER_DRIFT} = {paper_implied} < live gate {live_gate}"
+    assert 0 < FACTOR_DEDUP_OVERLAP_MAX < 1, "dedup overlap threshold must be in (0,1)"
+    assert 0 < FACTOR_DEDUP_CAPEFF_TIEBREAK < 1, "dedup capeff tiebreak must be in (0,1)"
 
     print("gates: OK")
     print(f"  bt mining gate (cross-bucket V1 ∩ V2): nev > {bt:.1%}")
