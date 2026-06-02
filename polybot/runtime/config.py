@@ -44,9 +44,11 @@ CHAIN_ID     = 137                                          # Polygon
 SIG_TYPE     = 1                                            # POLY_PROXY
 FUNDER       = "0x606970B1b66993A8E36C6CD41c1823317152f7ae" # proxy wallet (data-api verified)
 
-# Per-trade size = wallet_usdc × KELLY_FRAC[strategy_id]. Fixed-fraction Kelly,
-# shared pool. Fresh balance query per HIT → size auto-deflates as concurrent
-# positions consume USDC.
-KELLY_FRAC        = {"H5": 0.05, "R2": 0.05}
+# Per-trade size = wallet_usdc × BANKROLL_FRAC[label]. FIXED-FRACTION of bankroll —
+# NOT Kelly: ignores edge/winrate, flat % per wager. (R4 full-Kelly≈26%; 5%≈0.2×,
+# conservative for a marginal-CI first-live trial. Fractional-Kelly = future upgrade
+# once real-money OOS tightens the edge estimate.) Fresh balance query per HIT →
+# size auto-deflates as concurrent positions consume USDC.
+BANKROLL_FRAC     = {"R4": 0.05}      # killed factors removed; arm via Strategy.live + deploy
 LIVE_MIN_USD      = 1.0          # PM min order notional; skip live if size below
 LIVE_SLIPPAGE_CAP = 0.03         # BUY worst-price limit = entry_price_paper + cap

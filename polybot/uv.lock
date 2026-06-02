@@ -1221,6 +1221,11 @@ dependencies = [
     { name = "websockets" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "httpx" },
@@ -1232,6 +1237,9 @@ requires-dist = [
     { name = "web3", specifier = ">=7.16.0" },
     { name = "websockets" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.0.3" }]
 
 [[package]]
 name = "propcache"

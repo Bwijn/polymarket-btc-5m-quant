@@ -45,8 +45,7 @@ class PaperTrade5mBinary(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
 
     # ---- strategy ----
-    hypothesis: str
-    expr: str
+    expr: str             # sole strategy identity (dedup key + dashboard join key)
     direction: Direction
 
     # ---- market (line-agnostic facts) ----

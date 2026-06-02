@@ -2,7 +2,7 @@
 
 Each TICK_S seconds:
   1. Trigger eval — for current + previous candle, for each ACTIVE strategy:
-     If now ≥ cs + entry_offset_s and (strategy_id, cs) not yet recorded,
+     If now ≥ cs + entry_offset_s and (expr, cs) not yet recorded,
      fetch ticks via PM CLOB /prices-history (evaluation only), compute features,
      evaluate trigger expression. On hit, INSERT a paper_trade_5m_binary row
      with paper book snapshot only — bt track removed 2026-05-26 (derived
@@ -22,7 +22,7 @@ from sqlmodel import Session, select, SQLModel, create_engine
 
 from polybot.runtime.config import (DB_FILE, SETTLE_LAG_S, PAPER_SIZE_USD,
                             SCHEDULE_REFRESH_S, SETTLE_POLL_S,
-                            LIVE_ENABLED, KELLY_FRAC, LIVE_MIN_USD, LIVE_SLIPPAGE_CAP)
+                            LIVE_ENABLED, BANKROLL_FRAC, LIVE_MIN_USD, LIVE_SLIPPAGE_CAP)
 from polybot.runtime.models import PaperTrade5mBinary, TradeStatus, Direction
 from polybot.runtime.live_exec import LiveExecutor, LiveFill
 from polybot.runtime.redeem import redeem_loop
@@ -100,8 +100,8 @@ class Scanner:
         self.trades_cache = trades_cache    # INTRA features need this; None → INTRA = NaN
         # LiveExecutor only when armed — None ⇒ pure paper, no key/network touched.
         self.live = LiveExecutor() if LIVE_ENABLED else None
-        # _evaluated: (strategy_id, cs) we've already eval'd (hit or miss).
-        # _scheduled: (strategy_id, cs) we've already created an asyncio task for.
+        # _evaluated: (expr, cs) we've already eval'd (hit or miss).
+        # _scheduled: (expr, cs) we've already created an asyncio task for.
         # DB is SSOT for hits; sets are ephemeral — restart re-seeds from DB.
         self._evaluated: set[tuple[str, int]] = set()
         self._scheduled: set[tuple[str, int]] = set()
@@ -109,7 +109,7 @@ class Scanner:
     def _seed_evaluated_from_db(self, cs_min: int) -> None:
         with Session(self.engine) as s:
             rows = s.exec(
-                select(PaperTrade5mBinary.hypothesis, PaperTrade5mBinary.candle_start_s)
+                select(PaperTrade5mBinary.expr, PaperTrade5mBinary.candle_start_s)
                 .where(PaperTrade5mBinary.candle_start_s >= cs_min)
             ).all()
         for r in rows:
@@ -120,11 +120,11 @@ class Scanner:
         slug = slug_for(cs)
         ev = await fetch_event(slug)
         if ev is None:
-            log.info(f"[{strat.id}] cs={cs} event not found yet (slug={slug})")
+            log.info(f"[{strat.label}] cs={cs} event not found yet (slug={slug})")
             return
         m = parse_market(ev)
         if m is None:
-            log.warning(f"[{strat.id}] cs={cs} market unparseable")
+            log.warning(f"[{strat.label}] cs={cs} market unparseable")
             return
 
         # 并发 fetch: PM up + dn ticks (always) + Binance klines (only if expr needs).
@@ -141,10 +141,10 @@ class Scanner:
         ticks_up, ticks_dn = results[0], results[1]
         klines = results[2] if need_klines else None
         if not ticks_up:
-            log.info(f"[{strat.id}] cs={cs} no up ticks yet")
+            log.info(f"[{strat.label}] cs={cs} no up ticks yet")
             return
         if need_klines and (klines is None or klines.empty):
-            log.warning(f"[{strat.id}] cs={cs} Binance klines fetch empty — skip")
+            log.warning(f"[{strat.label}] cs={cs} Binance klines fetch empty — skip")
             return
 
         # engine=self.engine → compute_row 查/写 feature_history (transform 用).
@@ -157,7 +157,7 @@ class Scanner:
                          up_token=m['up_token'], dn_token=m['down_token'],
                          engine=self.engine, klines=klines)
         hit = bool(evaluate(strat.expr, df).iloc[0])
-        self._evaluated.add((strat.id, cs))
+        self._evaluated.add((strat.expr, cs))
         if not hit:
             return
 
@@ -178,7 +178,6 @@ class Scanner:
         entry_price_paper = book_ask_up if strat.direction == 'UP' else book_ask_dn
 
         row = PaperTrade5mBinary(
-            hypothesis=strat.id,
             expr=strat.expr,
             direction=Direction(strat.direction),
             slug=slug,
@@ -202,7 +201,7 @@ class Scanner:
             s.add(row)
             s.commit()
             s.refresh(row)
-        log.info(f"[{strat.id}] HIT cs={cs} entry_paper={entry_price_paper} "
+        log.info(f"[{strat.label}] HIT cs={cs} entry_paper={entry_price_paper} "
                  f"size=${PAPER_SIZE_USD:.2f} #{row.id}")
 
         # live track: place the real order for promoted strategies. Paper row is
@@ -214,23 +213,23 @@ class Scanner:
     async def _place_live(self, row_id: int, strat: Strategy, m: dict,
                           entry_price_paper: float | None) -> None:
         """Place the real order for a live-strategy HIT (architecture A: same
-        row as the paper trade). size = wallet_usdc × KELLY_FRAC[id]."""
+        row as the paper trade). size = wallet_usdc × BANKROLL_FRAC[label]."""
         if entry_price_paper is None:
-            log.warning(f"[{strat.id}] #{row_id} no book snapshot — skip live")
+            log.warning(f"[{strat.label}] #{row_id} no book snapshot — skip live")
             return
-        kelly = KELLY_FRAC.get(strat.id)
-        if kelly is None:
-            log.error(f"[{strat.id}] #{row_id} live=True but no KELLY_FRAC — skip")
+        frac = BANKROLL_FRAC.get(strat.label)
+        if frac is None:
+            log.error(f"[{strat.label}] #{row_id} live=True but no BANKROLL_FRAC — skip")
             return
         token = m['up_token'] if strat.direction == 'UP' else m['down_token']
         try:
             balance = await asyncio.to_thread(self.live.wallet_usdc)
         except Exception as e:
-            log.exception(f"[{strat.id}] #{row_id} balance query failed: {e}")
+            log.exception(f"[{strat.label}] #{row_id} balance query failed: {e}")
             return
-        size = round(balance * kelly, 2)
+        size = round(balance * frac, 2)
         if size < LIVE_MIN_USD:
-            log.warning(f"[{strat.id}] #{row_id} size ${size:.2f} < ${LIVE_MIN_USD} "
+            log.warning(f"[{strat.label}] #{row_id} size ${size:.2f} < ${LIVE_MIN_USD} "
                         f"(wallet ${balance:.2f}) — skip live")
             return
         price_limit = min(0.99, round(entry_price_paper + LIVE_SLIPPAGE_CAP, 2))
@@ -238,10 +237,10 @@ class Scanner:
         fill = await asyncio.to_thread(self.live.buy, token, size, price_limit)
         self._record_live(row_id, fill)
         if fill.success:
-            log.info(f"[{strat.id}] #{row_id} LIVE BUY ${fill.usdc_paid:.2f} "
+            log.info(f"[{strat.label}] #{row_id} LIVE BUY ${fill.usdc_paid:.2f} "
                      f"@ {fill.fill_price:.3f} ({fill.shares:.1f}sh) {fill.order_id}")
         else:
-            log.error(f"[{strat.id}] #{row_id} LIVE order failed: {fill.error_msg}")
+            log.error(f"[{strat.label}] #{row_id} LIVE order failed: {fill.error_msg}")
 
     def _set_live_status(self, row_id: int, status: str) -> None:
         with Session(self.engine) as s:
@@ -330,7 +329,7 @@ class Scanner:
 
         outcome = "WIN" if my_won else "LOSS"
         paper_str = f"paper={pnl_ratio_paper:+.1%}" if pnl_ratio_paper is not None else "paper=n/a"
-        log.info(f"settle #{row.id} [{row.hypothesis}] {outcome} "
+        log.info(f"settle #{row.id} [{row.expr[:48]}] {outcome} "
                  f"{paper_str} up_won={m['up_won']}")
 
     # ---- timer-driven trigger ----------------------------------------------
@@ -340,16 +339,16 @@ class Scanner:
         delay = target_t - time.time()
         if delay > 0:
             await asyncio.sleep(delay)
-        if (strat.id, cs) in self._evaluated:
+        if (strat.expr, cs) in self._evaluated:
             return
         try:
             await self.eval_one(strat, cs)
         except Exception as e:
-            log.exception(f"[{strat.id}] cs={cs} eval error: {e}")
+            log.exception(f"[{strat.label}] cs={cs} eval error: {e}")
 
     async def schedule_loop(self) -> None:
         """Periodically register schedule_one tasks for current + next candle."""
-        log.info(f"schedule loop: strategies={[s.id for s in ACTIVE]}")
+        log.info(f"schedule loop: strategies={[s.label for s in ACTIVE]}")
         while True:
             try:
                 now = int(time.time())
@@ -357,7 +356,7 @@ class Scanner:
                 cs_prev = cs_now - CANDLE_S
                 for strat in ACTIVE:
                     for cs in (cs_prev, cs_now, cs_now + CANDLE_S):
-                        key = (strat.id, cs)
+                        key = (strat.expr, cs)
                         if key in self._scheduled or key in self._evaluated:
                             continue
                         # too-late: entry window already closed (e.g. after restart)

@@ -2,8 +2,14 @@
 # Deploy polybot code to VPS. Never touches polybot.db or .venv.
 set -e
 
-echo "=== SSOT verify: mining ↔ polybot.lib.compute byte-equal ==="
 cd /home/polymarket_work
+
+echo "=== pytest: unit + integration (scanner smoke + live-dry contract) ==="
+uv run --project polybot python -m pytest tests/ -q
+# Aborts deploy if any test red. Covers: ACTIVE validate, dashboard view, compute+
+# evaluate per expr, INSERT/seed roundtrip, live order construction (no-fund-touch).
+
+echo "=== SSOT verify: mining ↔ polybot.lib.compute byte-equal ==="
 uv run python scratch/tools/verify_compute_ssot.py --n-events 30
 # Fails (exit 1) if mining batch impl diverges from polybot per-event impl.
 # Common cause: someone added math to mining/features/<x>.py without delegating

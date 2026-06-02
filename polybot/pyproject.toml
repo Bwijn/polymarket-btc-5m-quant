@@ -19,3 +19,8 @@ testpaths = ["tests"]
 [tool.uv.sources]
 py-builder-relayer-client = { git = "https://github.com/Polymarket/py-builder-relayer-client.git", rev = "6589f36740a2a98736f5b0499f29d2d234c583bc" }
 py-builder-signing-sdk = { git = "https://github.com/Polymarket/py-builder-signing-sdk.git", rev = "e5403c4a86e28b8aa9105d52bc5606fdb5511be0" }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
