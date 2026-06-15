@@ -6,16 +6,8 @@ at constant level — only at math level (and that's the broader package design)
 """
 from __future__ import annotations
 
-# ── PM PRE constants ─────────────────────────────────────────────────────────
-PRE_OFFSETS = [3600, 1800, 900, 600, 300, 120, 60, 30, 0]
-PRE_WINDOWS = [60, 180, 300, 600, 900, 1800, 3600]
-# INTRA_OFFSETS / INTRA_WINDOWS removed 2026-05-24 — migrated to pmtrades.
-
 # ── Binance constants ────────────────────────────────────────────────────────
 BN_PRE_WINDOWS_S = [60, 300, 900, 1800, 3600]
-
-# ── basis (PM × Binance derived) constants ───────────────────────────────────
-BASIS_K = 2.0
 
 # ── Transform constants (regime-relative rolling) ────────────────────────────
 # Window = event count (~5min spacing → 288 ≈ 24h, 2016 ≈ 7d).

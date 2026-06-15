@@ -32,7 +32,7 @@ echo "  trades  MAX : $(sqlite3 $DB 'SELECT datetime(MAX(ts), "unixepoch") FROM 
 echo "  binance MAX : $(sqlite3 $DB 'SELECT datetime(MAX(open_ts_ms)/1000, "unixepoch") FROM binance_klines')"
 echo "  features    : $(ls -lh scratch/data/features.parquet 2>/dev/null | awk '{print $5, $6, $7, $8}' || echo 'missing')"
 
-banner "[1/5] $(stamp) events + raw_history (backfill_extend)"
+banner "[1/5] $(stamp) events (backfill_extend)"
 T_S=$(date +%s)
 # Optional env var: FORCE_FROM=YYYY-MM-DD to re-discover historical days (e.g., bug fix)
 uv run python scratch/research/ingestion/backfill_extend_20260511.py ${FORCE_FROM:+--force-from $FORCE_FROM}

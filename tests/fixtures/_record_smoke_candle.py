@@ -2,8 +2,7 @@
 
 Context: N1 integration smoke test needs a deterministic, portable fixture so the
 test never touches the live db / network. Per CLAUDE.md "fixture=录制真response".
-Source: db/pm_btc5m.db — events.raw_history_{up,down} (PM /prices-history ticks)
-        + trades (cid+ts windowed) for one rich candle.
+Source: db/pm_btc5m.db — trades (cid+ts windowed) + binance_klines for one rich candle.
 Expected: writes tests/fixtures/smoke_candle.json. Re-run only to refresh fixture.
 """
 import json
@@ -11,13 +10,13 @@ import sqlite3
 from pathlib import Path
 
 DB = Path(__file__).resolve().parents[2] / "db" / "pm_btc5m.db"
-# Chosen: most trades-in-180s among V2 BTC candles with both raw histories present
-# (see N1 selection query). Deterministic — hardcoded so the fixture is reproducible.
+# Chosen: most trades-in-180s among V2 BTC candles. Deterministic — hardcoded so
+# the fixture is reproducible.
 CID = "0xa982d0155543847b4da6277d13c736a684174426ed4d037f9ce77c62606fc0e1"
 
 con = sqlite3.connect(DB)
-cs, up_tok, dn_tok, up_won, rhu, rhd = con.execute(
-    "SELECT candle_start, up_token, down_token, up_won, raw_history_up, raw_history_down "
+cs, up_tok, dn_tok, up_won = con.execute(
+    "SELECT candle_start, up_token, down_token, up_won "
     "FROM events WHERE cid=?", (CID,)).fetchone()
 trades = con.execute(
     "SELECT ts, side, price, size, asset, proxy_wallet FROM trades "
@@ -31,11 +30,10 @@ klines = con.execute(
 
 fixture = {
     "cid": CID, "cs": cs, "up_token": up_tok, "down_token": dn_tok, "up_won": up_won,
-    "ticks_up": json.loads(rhu), "ticks_dn": json.loads(rhd),
     "trades": [list(t) for t in trades],
     "klines": [list(k) for k in klines],
 }
 out = Path(__file__).with_name("smoke_candle.json")
 out.write_text(json.dumps(fixture))
-print(f"wrote {out} | trades={len(trades)} ticks_up={len(fixture['ticks_up'])} "
-      f"klines={len(klines)} cs={cs} up_won={up_won} size={out.stat().st_size}B")
+print(f"wrote {out} | trades={len(trades)} klines={len(klines)} "
+      f"cs={cs} up_won={up_won} size={out.stat().st_size}B")

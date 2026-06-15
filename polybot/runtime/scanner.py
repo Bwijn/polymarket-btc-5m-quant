@@ -3,7 +3,7 @@
 Each TICK_S seconds:
   1. Trigger eval — for current + previous candle, for each ACTIVE strategy:
      If now ≥ cs + entry_offset_s and (expr, cs) not yet recorded,
-     fetch ticks via PM CLOB /prices-history (evaluation only), compute features,
+     compute features (trades_cache + Binance klines),
      evaluate trigger expression. On hit, INSERT a paper_trade_5m_binary row
      with paper book snapshot only — bt track removed 2026-05-26 (derived
      on-demand via scratch/research/compute_drift.py + PM /trades).
@@ -28,10 +28,9 @@ from polybot.runtime.live_exec import LiveExecutor, LiveFill
 from polybot.runtime.redeem import redeem_loop
 from polybot.strategies import ACTIVE, Strategy
 from polybot.lib.expr_eval_v1 import evaluate
-from polybot.lib.entry_price import get_price_at
 from polybot.lib.friction import paper_friction_ratio
 from polybot.runtime.features import compute_row, needs_klines
-from polybot.runtime.pm_api import slug_for, fetch_event, parse_market, fetch_prices_history
+from polybot.runtime.pm_api import slug_for, fetch_event, parse_market
 from polybot.runtime.pm_ws import BookCache, TradesCache
 from polybot.runtime.bn_api import fetch_klines
 
@@ -51,7 +50,7 @@ def _ensure_dashboard(eng) -> None:
     """Materialize ACTIVE → active_strategies table + paper_active_agg view.
 
     Why: paper_trade_5m_binary lives in this db (polybot.db); ACTIVE lives in
-    strategies.py (code); paper_candidates lives in pm_btc5m.db (cross-db join
+    strategies.py (code); factors registry lives in pm_btc5m.db (cross-db join
     forbidden, CLAUDE.md). So mirror ACTIVE into a small table here on every
     startup → the view auto-filters aggregation to current factors. Killed/old
     factors drop out automatically (not in ACTIVE → not in table → not in view).
@@ -127,32 +126,19 @@ class Scanner:
             log.warning(f"[{strat.label}] cs={cs} market unparseable")
             return
 
-        # 并发 fetch: PM up + dn ticks (always) + Binance klines (only if expr needs).
-        # startTs=cs-3600 matches mining backfill — carry-forward fallback for the ~3.9%
-        # of candles with no trade in [cs, cs+60].
+        # Only Binance klines need fetching (bn_ exprs); INTRA features come from trades_cache.
         need_klines = needs_klines(strat.expr)
-        fetches = [
-            fetch_prices_history(m['up_token'],   cs - 3600, cs + strat.entry_offset_s, fidelity=1),
-            fetch_prices_history(m['down_token'], cs - 3600, cs + strat.entry_offset_s, fidelity=1),
-        ]
-        if need_klines:
-            fetches.append(fetch_klines(cs - 3600, cs))
-        results = await asyncio.gather(*fetches)
-        ticks_up, ticks_dn = results[0], results[1]
-        klines = results[2] if need_klines else None
-        if not ticks_up:
-            log.info(f"[{strat.label}] cs={cs} no up ticks yet")
-            return
+        klines = await fetch_klines(cs - 3600, cs) if need_klines else None
         if need_klines and (klines is None or klines.empty):
             log.warning(f"[{strat.label}] cs={cs} Binance klines fetch empty — skip")
             return
 
         # engine=self.engine → compute_row 查/写 feature_history (transform 用).
-        # 无 transform 的 expr (e.g., H5) 不触发任何 db op, engine arg 无副作用.
+        # 无 transform 的 expr 不触发任何 db op, engine arg 无副作用.
         # trades=trades_cache[cid] → INTRA features (max/min/mean_intra, pmt_*) source.
         # b3295eb migration: INTRA features 改用 trades-based, scanner 必须 pass trades.
         trades = self.trades_cache.get(m['condition_id']) if self.trades_cache else []
-        df = compute_row(strat.expr, ticks_up, ticks_dn, cs,
+        df = compute_row(strat.expr, cs,
                          trades=trades,
                          up_token=m['up_token'], dn_token=m['down_token'],
                          engine=self.engine, klines=klines)
@@ -162,7 +148,6 @@ class Scanner:
             return
 
         # bt entry_price NOT computed here — bt track removed (2026-05-26).
-        # ticks_up/ticks_dn fetched above purely for compute_row expr evaluation.
         # bt drift now derived on-demand via PM /trades (scratch/research/compute_drift.py).
 
         # paper-side: live orderbook BOTH sides recorded for arb_gap analysis.

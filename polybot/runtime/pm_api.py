@@ -12,7 +12,8 @@ import json
 import logging
 import httpx
 from typing import Optional
-from polybot.runtime.config import GAMMA_API, CLOB_API, ASSET_PREFIX
+from polybot.runtime.config import GAMMA_API, ASSET_PREFIX
+from polybot.runtime.coalesce import coalesce
 
 log = logging.getLogger("polybot.pm_api")
 
@@ -24,6 +25,7 @@ def slug_for(cs: int) -> str:
     return f"{ASSET_PREFIX}{cs}"
 
 
+@coalesce(ttl_s=5.0)   # collapse the eval/settle herd; 5s « SETTLE_POLL_S(30s) keeps closed/up_won fresh
 async def fetch_event(slug: str) -> Optional[dict]:
     """Gamma /events/slug/{slug}. Returns Event dict or None on 404.
 
@@ -81,25 +83,6 @@ def parse_market(event: dict) -> Optional[dict]:
     return out
 
 
-async def fetch_prices_history(token_id: str, start_ts: int, end_ts: int,
-                                fidelity: int = 1) -> Optional[list[dict]]:
-    """CLOB /prices-history. Returns list of {'t': int, 'p': float} (UP-token prices).
-
-    fidelity=1 (1-min) matches mining backfill — keeps SSOT alignment.
-    """
-    url = f"{CLOB_API}/prices-history"
-    params = {"market": token_id, "startTs": start_ts, "endTs": end_ts, "fidelity": fidelity}
-    try:
-        r = await _client.get(url, params=params)
-    except httpx.HTTPError as e:
-        log.warning(f"prices-history {token_id[:10]}..: network err {e}")
-        return None
-    if r.status_code != 200:
-        log.warning(f"prices-history {token_id[:10]}..: HTTP {r.status_code}")
-        return None
-    return r.json().get("history") or []
-
-
 async def aclose():
     await _client.aclose()
 
@@ -121,13 +104,6 @@ if __name__ == '__main__':
         print(f"  ✓ event {slug}: condition_id={m['condition_id'][:14]}.. "
               f"up={m['up_token'][:8]}.. down={m['down_token'][:8]}.. "
               f"closed={m['closed']} up_won={m['up_won']}")
-
-        ticks = await fetch_prices_history(m['up_token'], cs, cs + 300, fidelity=1)
-        assert ticks, "no ticks"
-        assert all('t' in t and 'p' in t for t in ticks), "tick schema"
-        in_window = [t for t in ticks if cs <= t['t'] <= cs + 300]
-        print(f"  ✓ ticks: total={len(ticks)} in_window=[{cs}, {cs+300}]={len(in_window)} "
-              f"first={ticks[0]} last={ticks[-1]}")
         await aclose()
 
     asyncio.run(_selftest())

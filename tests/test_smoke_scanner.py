@@ -44,7 +44,7 @@ def scanner(tmp_path, monkeypatch):
 
 def _compute(sc, expr):
     kl = KLINES if needs_klines(expr) else None  # mirror scanner: klines only when expr needs
-    return compute_row(expr, FIX["ticks_up"], FIX["ticks_dn"], FIX["cs"],
+    return compute_row(expr, FIX["cs"],
                        trades=FIX["trades"], up_token=FIX["up_token"],
                        dn_token=FIX["down_token"], engine=sc.engine, klines=kl)
 
