@@ -7,19 +7,21 @@
   1. **3 流分置**: data → db tables, code/rules → `polybot/`, prose docs → `docs/`. 不混. 
      SPEC 这种混合体拆成 db 行 (quant metric) + code function (decision rule) + markdown (rationale prose).
   2. **todo.md 只留 todo**: 完成的 item 不堆 audit 区 (用 git log 做 audit). 减视觉噪声.
-  3. **DB-as-Bloomberg-terminal**: 表 schema 命名自文档化 (e.g., `factor_decisions`, `mining_runs_v13_legacy`, `_legacy_copytrade_paper` 前缀), 用 db viewer (DBeaver) 看板替代 web dashboard. 加 derived view (e.g., `factor_current_state`) 给"当前快照"用.
+  3. **DB-as-Bloomberg-terminal**: 表 schema 命名自文档化 (e.g., `factor_decisions`, `mining_runs_v13_legacy`, `_legacy_copytrade_paper` 前缀), 用 db viewer (DBeaver) 看板替代 web dashboard. 加 derived view (e.g., `factor_panel` = `factors` 的 per-era 指标投影) 给"当前快照"用.
+  4. **状态注册表 `factors` = identity/lifecycle 实列 + 所有 metric 入 `diag` JSON, 看板靠 per-era view (应对 metric churn, 不 migrate)**: (`factors` = 2026-06-15 合并 `paper_candidates` 分析 + `factor_decisions` 决策账本 → 1 factor 1 行, `status` 列分 lifecycle: candidate/paper/live/killed/excluded.) 研究指标集每 cycle 会 churn (v1/v2 era → lens era → 未来 drop5/week-wilson) —— **连「gate 指标」本身的集合都在变**, 故旧赌「gate 指标绑 `gates.py` = 罕见变 = 可实列」**已证伪作废**. 新规: **只有永不 churn 的 identity (`expr/direction/entry_time_s/runtime_ok`) + lifecycle (`status/status_at/cycle_tag/created_at/note`) 留实列** (直接 `WHERE status`); **所有 metric** (gate `nev/net_base_wilson/wf_sign_frac/lens_count/n_hit` + 诊断 wr/ep/effN/coverage + 跨-era 异构 v1v2...) **全塞 `diag` TEXT (JSON)**, 加指标 = 多写一个 key, **底表零 migration**. 不同 era 行带不同 key 集 (标 `"era"`) 同表共存. **queryability 不丢**: `json_extract(diag,'$.key')` 在 `WHERE`/`ORDER` 可用; **per-era view `factor_panel`** 把当前 era 指标 (跨 era `COALESCE($.nev,$.v2_nev)`) 投影成命名列, 换 era 只 `CREATE OR REPLACE VIEW` 不动底表. (教训 2026-06-14→06-15: v1/v2 实列 → lens 实列 ALTER-migrate 是 churn 陷阱; 连 gate 指标实列也中招 → **全 JSON + view 才真免疫**.)
 - **No blackbox** 永远不要给用户黑箱操作。每一步操作都要解释**为什么**这么做，底层原理是什么。用户要靠这套系统谋生，必须能逐行理解每一行在干什么。不解释的执行 = 不合格。
 - **No third-party wrapper SDK** 涉及真金白银的依赖只用官方SDK（V2 era：`py-clob-client-v2`，V1 cutover 4/28/2026 后 V1 SDK `py-clob-client` 已不能签名 V2 orders）。禁止安装第三方 wrapper / "便利包"（如 polymarket-apis, polybot-toolkit, awesome-pm 等高 star 但非官方的封装），X/Reddit 已多人中招报告 backdoor / 私钥窃取 / silently 改 order params。官方 SDK 与直接调用 PM endpoints (httpx) 都允许：CLOB 写操作（下单 / cancel / withdraw）必须用官方 SDK；公开 read endpoint（Gamma metadata, CLOB prices-history 等）httpx 手写也可，不强制 SDK。
 - **Deploy safety** 本地（/home/polymarket_work/polybot/）为开发环境，VPS（/opt/polybot/）为生产环境。部署时只推代码文件，**严禁覆盖VPS上的polybot.db**，数据库是不可替代的数据资产。部署统一使用 `bash /home/polymarket_work/deploy.sh`（rsync + systemctl restart），禁止手动 scp 或重复编写部署脚本。
 - **DB 职责隔离 (本地全 `/home/polymarket_work/db/`, 各司其职, 永不混)**:
   | DB 路径 | 角色 | 内容 | 谁写 |
   |---|---|---|---|
-  | `/home/polymarket_work/db/pm_btc5m.db` | **dev / research workspace** | raw ingest (events, trades, binance_*), mining (factors, mining_runs), analysis (paper_candidates), decision audit (factor_decisions) | mining 脚本 + 分析脚本, 本地 only |
+  | `/home/polymarket_work/db/pm_btc5m.db` | **dev / research workspace** | raw ingest (events, trades, binance_*), analysis (paper_candidates), decision audit (factor_decisions) | mining 脚本 + 分析脚本, 本地 only |
   | `/home/polymarket_work/db/polybot_live.db` | **VPS prod sync 本地副本 (read-only)** | paper_trade_5m_binary, feature_history (镜像) | `bash sync_paper_db.sh` rsync 自 VPS |
   | `/opt/polybot/polybot.db` (VPS) | **prod runtime SSOT** | scanner.py 实时写入 paper / live trade | scanner.py on VPS |
   
   ❌ 禁止: 把 mining/analysis 表加到 polybot 实战 db, 或把 paper trade 表加到 pm_btc5m.db.
   ❌ 禁止: 跨 db 互查 (e.g. polybot_live.db join 到 factor_decisions). 决策表查 pm_btc5m.db, paper 表查 polybot_live.db, 不互通.
+  ❌ 禁止: 全库 copy / backup pm_btc5m.db (80G+, 绝大多数是 raw ingest 的 events/trades/binance_*; `shutil.copy2` 整库 = 巨大 I/O + 撑爆 WSL vhdx). 改某张表的 schema / 数据, **只 dump 目标表**: `sqlite3 db .dump <table> > t.sql` (小表瞬间, = 精确 rollback artifact 回滚物). 整库 copy 仅在迁移**整个** db 时才允许. 教训: 为改 6 行的 paper_candidates 而 `shutil.copy2` 整 80G 库, 跑到 15G 被掐 (2026-06-14).
   ✓ 推荐: `bash sync_paper_db.sh` 同步 VPS polybot.db → 本地 `db/polybot_live.db`. 不覆盖 pm_btc5m.db.
   ✓ 推荐: dev → prod 决策传递走**代码** (strategies.py 改 ACTIVE) + deploy.sh, **不**走 db 同步.
 - **API docs workflow (强制顺序, 不可跳步)**:

@@ -1,8 +1,8 @@
 """Active paper-trade strategies — the runtime SSOT for scanner's ACTIVE tuple.
 
 Lock-in spec: changes after lock = goal-post shift, enforced by git-tracking.
-Killed strategies are NOT kept here — their audit lives in factor_decisions
-(pm_btc5m.db) + git history.
+Killed strategies are NOT kept here — their audit lives in the factors table
+(pm_btc5m.db, status='killed') + git history.
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -24,14 +24,14 @@ class Strategy:
             raise ValueError(f"bad direction {self.direction!r}")
 
 
-# bt audit lives in paper_candidates table — query for nev / n_hit / cycle_tag etc.
+# bt audit lives in the factors table (pm_btc5m.db) — query factor_panel for nev / n_hit / cycle_tag.
 # Comments here only carry live-status / KILL rationale (info not in db).
 
 # R4 — sole survivor of per-$1 re-eval (2026-06-01). even-money ep≈0.51.
 # per-$1 bt V2(OOS) +19.9% ↔ paper +21.2% (n=126, t=2.52) — bt 预测 paper, drift-fix
 # 验证成立. 过 paper→live gate (t>1.65 ∧ nev≥5%). GRADUATED 2026-06-02: live=True,
 # 5% bankroll (paper n=131 t=2.45 nev+20.7%; 95% CI 下界+4.1% 擦 5% → 小额上线收窄 CI).
-# 同 cycle 5 个 (R2/P1-P4) per-$1 OOS+paper 双弱 → killed (factor_decisions 2026-06-01).
+# 同 cycle 5 个 (R2/P1-P4) per-$1 OOS+paper 双弱 → killed (factors status, 2026-06-01).
 # 'R4' = grandfathered label (历史 paper 行连续); 未来 factor 按 expr 索引, label 仅 log.
 R4 = Strategy(
     'R4',
@@ -41,35 +41,11 @@ R4 = Strategy(
     live=True,
 )
 
-# ── cohort per_dollar_20260602 — 5 independent signals entering paper ──────────
-# dedup'd from 199 cross-bucket survivors (overlap-coef cluster, gates.FACTOR_DEDUP*).
-# 2 underdog + 3 mid · 3 UP + 2 DOWN. All INTRA (trades-based, no klines).
-# Self-prove via paper EV; R4 = live bench. bt audit → paper_candidates table.
-# id = mechanism shorthand (no R/P abbreviation; NEXT-3 will switch dedup to expr).
-MIN120DN = Strategy(
-    'min_intra_120_dn',
-    'min_intra_120_dn__rank24h>0.971731424331665 & min_intra_120_dn__zs7d>1.6201647520065308',
-    entry_offset_s=120,
-    direction='UP',
-)
-MIN180UP = Strategy(
-    'min_intra_180_up',
-    'min_intra_180_up__zs7d>1.6483670473098755',
-    entry_offset_s=180,
-    direction='DOWN',
-)
-CHGRATE120UP = Strategy(
-    'chg_rate_120_up',
-    'chg_rate_intra_120_up<117.5 & chg_rate_intra_120_up__zs7d<-1.5178922414779663',
-    entry_offset_s=120,
-    direction='UP',
-)
-CHGRATE120DN = Strategy(
-    'chg_rate_120_dn',
-    'chg_rate_intra_120_dn__zs24h<-1.4102975130081177',
-    entry_offset_s=120,
-    direction='DOWN',
-)
+# ── cohort per_dollar_20260602 — entered paper as 5 signals; 4 KILLED 2026-06-14 ──
+# paper OOS 转负 (kill-unless-proven, factors status=killed): min_120_dn (t-2.18) /
+# min_180_up (t-1.33, tail-mirage P3) / chg_rate_120_dn (t-0.85, n224) /
+# chg_rate_120_up (t-0.98). std_180_up 边际正 (n=20 t=0.56) → 留场继续攒.
+# All INTRA (trades-based, no klines). bt audit → factors table (factor_panel view).
 STD180UP = Strategy(
     'std_180_up',
     'std_intra_180_up<0.04648745432496071',
@@ -77,8 +53,33 @@ STD180UP = Strategy(
     direction='UP',
 )
 
+# ── cohort lens_jaccard_20260614 — 11 dedup-rep, klines-only deploy (2026-06-15) ──
+# 仅 3 个 bn_ klines 进 paper (零 4k-cap 污染). 6 个 trades-based defer: PM /trades 4k-cap
+# 同时污染触发 candle 与 zs/rank 参考分布 → capped_frac 是不完整 filter; 干净 trades 史
+# 只能前向 WS 录, 故 trades-dark 至下个 cycle. 2 个 futures rep runtime_ok=0. 全 entry=cs+30s.
+# defer 决策 audit 在 factors (status=excluded); bt audit 同表 (factor_panel).
+BN_CHG1800_ZS_UP = Strategy(
+    'bn_chg1800_zs_up',
+    'bn_chg_pct_pre_1800__zs7d<-2.831822395324707',
+    entry_offset_s=30,
+    direction='UP',
+)
+BN_TBR300_DN = Strategy(
+    'bn_tbr300_dn',
+    'bn_taker_buy_ratio_pre_300>0.8700732588768005',
+    entry_offset_s=30,
+    direction='DOWN',
+)
+BN_CHG3600_RANK_UP = Strategy(
+    'bn_chg3600_rank_up',
+    'bn_chg_pct_pre_3600__rank24h<0.0069444444961845875',
+    entry_offset_s=30,
+    direction='UP',
+)
+
 ACTIVE: tuple[Strategy, ...] = (
-    R4, MIN120DN, MIN180UP, CHGRATE120UP, CHGRATE120DN, STD180UP,
+    R4, STD180UP,
+    BN_CHG1800_ZS_UP, BN_TBR300_DN, BN_CHG3600_RANK_UP,
 )
 
 
