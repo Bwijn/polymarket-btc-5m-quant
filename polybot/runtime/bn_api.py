@@ -1,7 +1,7 @@
 """Binance public klines fetcher. Read-only, no auth.
 
 Used by scanner to pull 1-min BTCUSDT klines covering [cs-3600, cs] for
-compute_bn_features / compute_basis_features (paper-time bn_* / basis_* atoms).
+compute_bn_features (paper-time bn_* atoms).
 
 Rate limit: /api/v3/klines weight=1-2; we issue ~1 request per 5min event,
 well under the 1200 weight/min budget.
@@ -16,9 +16,12 @@ from __future__ import annotations
 import httpx
 import pandas as pd
 
+from polybot.runtime.coalesce import coalesce
+
 BN_KLINES_URL = "https://api.binance.com/api/v3/klines"
 
 
+@coalesce(ttl_s=15.0)   # [cs-3600, cs] window is in the past = immutable; herd shares one fetch
 async def fetch_klines(start_s: int, end_s: int, symbol: str = "BTCUSDT") -> pd.DataFrame:
     """Fetch 1-min klines covering [start_s, end_s] inclusive. Returns DataFrame
     indexed by ts (unix seconds at minute boundary), columns matching mining
