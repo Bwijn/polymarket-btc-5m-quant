@@ -33,4 +33,11 @@ __pycache__/
 # dev DB workspace (pm_btc5m.db 60GB+, ingested research data, never commit)
 /db/
 
+# research data artifacts (parquet/csv/sql — derived, regenerable, never commit)
+/research/data/
+
+# research loose top-level scripts = throwaway probes/tools (ignored).
+# permanent pipeline lives only in subdirs (features/ ingestion/ mine/) → tracked.
+/research/*.py
+
 .claude/scheduled_tasks.lock
