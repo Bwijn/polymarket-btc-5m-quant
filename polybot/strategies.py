@@ -41,18 +41,6 @@ R4 = Strategy(
     live=True,
 )
 
-# ── cohort per_dollar_20260602 — entered paper as 5 signals; 4 KILLED 2026-06-14 ──
-# paper OOS 转负 (kill-unless-proven, factors status=killed): min_120_dn (t-2.18) /
-# min_180_up (t-1.33, tail-mirage P3) / chg_rate_120_dn (t-0.85, n224) /
-# chg_rate_120_up (t-0.98). std_180_up 边际正 (n=20 t=0.56) → 留场继续攒.
-# All INTRA (trades-based, no klines). bt audit → factors table (factor_panel view).
-STD180UP = Strategy(
-    'std_180_up',
-    'std_intra_180_up<0.04648745432496071',
-    entry_offset_s=180,
-    direction='UP',
-)
-
 # ── cohort lens_jaccard_20260614 — 11 dedup-rep, klines-only deploy (2026-06-15) ──
 # 仅 3 个 bn_ klines 进 paper (零 4k-cap 污染). 6 个 trades-based defer: PM /trades 4k-cap
 # 同时污染触发 candle 与 zs/rank 参考分布 → capped_frac 是不完整 filter; 干净 trades 史
@@ -78,7 +66,7 @@ BN_CHG3600_RANK_UP = Strategy(
 )
 
 ACTIVE: tuple[Strategy, ...] = (
-    R4, STD180UP,
+    R4,
     BN_CHG1800_ZS_UP, BN_TBR300_DN, BN_CHG3600_RANK_UP,
 )
 

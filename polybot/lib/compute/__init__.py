@@ -2,7 +2,7 @@
 
 Mining (`scratch/research/features/`) and scanner runtime (`polybot/runtime/features.py`)
 both import from here. Modular layout mirrors mining package structure:
-    pmtrades  — INTRA features (trades-based, sub-second, b3295eb migration)
+    pmtrades  — EP sampling (trades-based, p_intra_X + staleness)
     binance   — BN features (klines)
     transforms — rolling z-score / rank stateless functions
 
@@ -18,19 +18,14 @@ from __future__ import annotations
 from .constants import (
     BN_PRE_WINDOWS_S,
     TRANSFORM_SPEC,
-    PMT_ENTRY_GRID, PMT_INTRA_WINDOWS, PMT_FLOW_IMB_X,
-    PMT_SPREAD_X, PMT_SPREAD_W, PMT_ENTRY_W, PMT_LARGE_SIZE,
+    PMT_ENTRY_GRID, PMT_ENTRY_W,
     _TS, _SIDE, _PRICE, _SIZE, _ASSET, _PROXY,
 )
 
 # Re-export compute functions
 from .binance import compute_bn_features
 from .pmtrades import (
-    _pmt_entry_prices, _pmt_window_stats, _pmt_chg_rate,
-    _pmt_flow_imbalance, _pmt_impact, _pmt_velocity_burst_quiet,
-    _pmt_whale, _pmt_wallets, _pmt_spread_proxy, _pmt_cross_token,
-    _pmt_coarse_retained, _pmt_nan_record,
-    compute_pmtrades_features,
+    _pmt_entry_prices, _pmt_nan_record, compute_pmtrades_features,
 )
 from .transforms import compute_zs, compute_rank, parse_transform_col
 
@@ -56,8 +51,8 @@ if __name__ == '__main__':
     assert abs(z - 1.9364916731037083) < 1e-9
     r = compute_rank(2.0, [1.0, 2.0, 3.0, 2.0], min_periods=3)
     assert abs(r - 0.6) < 1e-9
-    assert parse_transform_col('delta_intra_60_dn__zs24h') == \
-        ('delta_intra_60_dn', TRANSFORM_SPEC['__zs24h'])
+    assert parse_transform_col('p_intra_60_up__zs24h') == \
+        ('p_intra_60_up', TRANSFORM_SPEC['__zs24h'])
     assert parse_transform_col('p_intra_60_up') is None
 
     print("polybot.lib.compute (package): self-test PASS")

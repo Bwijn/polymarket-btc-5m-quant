@@ -40,4 +40,5 @@ __pycache__/
 # permanent pipeline lives only in subdirs (features/ ingestion/ mine/) → tracked.
 /research/*.py
 
-.claude/scheduled_tasks.lock
+todo.md
+

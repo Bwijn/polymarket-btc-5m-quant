@@ -18,14 +18,9 @@ TRANSFORM_SPEC = {
     '__rank24h': {'op': 'rank', 'window': 288,  'min_periods': 50},
 }
 
-# ── pmtrades constants (trades-based intra-candle) ───────────────────────────
+# ── pmtrades constants (EP sampling) ─────────────────────────────────────────
 PMT_ENTRY_GRID    = [30, 45, 60, 75, 90, 120, 150, 180, 240, 270]
-PMT_INTRA_WINDOWS = [30, 60, 90, 120, 180, 240, 300]
-PMT_FLOW_IMB_X    = [30, 60, 90, 120, 180, 240, 270]
-PMT_SPREAD_X      = [30, 60, 90, 120]
-PMT_SPREAD_W      = 15
 PMT_ENTRY_W       = 5
-PMT_LARGE_SIZE    = 500
 
 # Row position indices for trades tuples (ts, side, price, size, asset, proxy_wallet).
 _TS, _SIDE, _PRICE, _SIZE, _ASSET, _PROXY = 0, 1, 2, 3, 4, 5

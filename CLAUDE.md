@@ -15,13 +15,13 @@
 - **DB 职责隔离 (本地全 `/home/polymarket_work/db/`, 各司其职, 永不混)**:
   | DB 路径 | 角色 | 内容 | 谁写 |
   |---|---|---|---|
-  | `/home/polymarket_work/db/pm_btc5m.db` | **dev / research workspace** | raw ingest (events, trades, binance_*), analysis (paper_candidates), decision audit (factor_decisions) | mining 脚本 + 分析脚本, 本地 only |
+  | `/home/polymarket_work/db/pm_btc5m.db` | **dev / research workspace** | events + binance_* (raw ingest), factors (状态注册表), _legacy_*/_ingest_v3_*. (**trades 表 2026-06-17 dropped** → EP 已 harvest 进 research/data/features.parquet; db 79G→286MB) | mining 脚本 + 分析脚本, 本地 only |
   | `/home/polymarket_work/db/polybot_live.db` | **VPS prod sync 本地副本 (read-only)** | paper_trade_5m_binary, feature_history (镜像) | `bash sync_paper_db.sh` rsync 自 VPS |
   | `/opt/polybot/polybot.db` (VPS) | **prod runtime SSOT** | scanner.py 实时写入 paper / live trade | scanner.py on VPS |
   
   ❌ 禁止: 把 mining/analysis 表加到 polybot 实战 db, 或把 paper trade 表加到 pm_btc5m.db.
   ❌ 禁止: 跨 db 互查 (e.g. polybot_live.db join 到 factor_decisions). 决策表查 pm_btc5m.db, paper 表查 polybot_live.db, 不互通.
-  ❌ 禁止: 全库 copy / backup pm_btc5m.db (80G+, 绝大多数是 raw ingest 的 events/trades/binance_*; `shutil.copy2` 整库 = 巨大 I/O + 撑爆 WSL vhdx). 改某张表的 schema / 数据, **只 dump 目标表**: `sqlite3 db .dump <table> > t.sql` (小表瞬间, = 精确 rollback artifact 回滚物). 整库 copy 仅在迁移**整个** db 时才允许. 教训: 为改 6 行的 paper_candidates 而 `shutil.copy2` 整 80G 库, 跑到 15G 被掐 (2026-06-14).
+  ❌ 禁止: 全库 copy / backup pm_btc5m.db. 改某张表的 schema / 数据, **只 dump 目标表**: `sqlite3 db .dump <table> > t.sql` (小表瞬间, = 精确 rollback artifact 回滚物). 整库 copy 仅在迁移**整个** db 时才允许. 
   ✓ 推荐: `bash sync_paper_db.sh` 同步 VPS polybot.db → 本地 `db/polybot_live.db`. 不覆盖 pm_btc5m.db.
   ✓ 推荐: dev → prod 决策传递走**代码** (strategies.py 改 ACTIVE) + deploy.sh, **不**走 db 同步.
 - **API docs workflow (强制顺序, 不可跳步)**:

@@ -1,7 +1,7 @@
 """Paper-time feature materialization for trigger evaluation.
 
 Thin wrapper over `compute.py` (SSOT pure math). For each trigger eval:
-  1. Calls compute_pmtrades_features (INTRA, trades-based) + compute_bn_features
+  1. Calls compute_pmtrades_features (EP, trades-based) + compute_bn_features
      (BN, when expr touches bn_) → full base set.
   2. For expr cols that are transforms (`__zs24h` / `__zs7d` / `__rank24h`), queries
      feature_history (polybot.db rolling buffer) for past values and calls
@@ -19,7 +19,7 @@ Public API:
         klines: pandas DataFrame for BN features (cs-3600 to cs Binance klines).
 
 Coverage:
-    INTRA (delta_intra, max/min/mean_intra, pmt_whale, pmt_flow_imb, ...): compute_pmtrades_features (trades-based)
+    EP (p_intra_X + staleness): compute_pmtrades_features (trades-based)
     BN (bn_taker, bn_vol_zscore, ...): compute_bn_features (klines-based)
     Transforms (__zs24h/__zs7d/__rank24h) over any base feature.
 """
@@ -62,8 +62,8 @@ def compute_row(expr: str, cs: int, *,
     """1-row DataFrame with columns = base_cols referenced by expr.
 
     trades:    list of (ts, side, price, size, asset, proxy_wallet) for cid.
-               INTRA features (max/min/mean_intra, delta_intra, pmt_*) require this.
-               Empty list → INTRA features = NaN (pmt_nan_record fallback).
+               EP features (p_intra_X + staleness) require this.
+               Empty list → EP features = NaN (pmt_nan_record fallback).
     up_token/dn_token: required if trades passed (compute_pmtrades_features needs).
     cs:        candle_start (unix seconds)
     engine:    SQLAlchemy engine for polybot.db. Required for transform atoms.
@@ -212,17 +212,17 @@ if __name__ == '__main__':
 
     # 3) Transform without engine → raise; with engine cold-start → NaN → predicate False
     try:
-        compute_row('delta_intra_120_up__rank24h>0.5', cs, **kw)
+        compute_row('p_intra_120_up__rank24h>0.5', cs, **kw)
         raise AssertionError("should have raised (no engine)")
     except NotImplementedError:
         pass
     with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as tmpdb:
         engine = create_engine(f"sqlite:///{tmpdb.name}")
         SQLModel.metadata.create_all(engine)
-        df = compute_row('delta_intra_120_up__rank24h>0.5', cs, engine=engine, **kw)
-        v = df.iloc[0]['delta_intra_120_up__rank24h']
+        df = compute_row('p_intra_120_up__rank24h>0.5', cs, engine=engine, **kw)
+        v = df.iloc[0]['p_intra_120_up__rank24h']
         assert v != v, f"cold-start rank should be NaN, got {v}"   # NaN
-        assert evaluate('delta_intra_120_up__rank24h>0.5', df).tolist() == [False]
+        assert evaluate('p_intra_120_up__rank24h>0.5', df).tolist() == [False]
 
     # 4) Old no-suffix names rejected by validate
     for old_name in ('p_intra_90<0.6', 'max_intra_120<0.4'):
@@ -236,7 +236,7 @@ if __name__ == '__main__':
     assert needs_klines('bn_taker_buy_ratio_pre_60>0.5') is True
     assert needs_klines('bn_vol_zscore_pre_60__zs24h>0') is True    # transform on bn base
     assert needs_klines('p_intra_90_up<0.6') is False
-    assert needs_klines('delta_intra_120_dn__rank24h<0.5') is False
+    assert needs_klines('p_intra_120_dn__rank24h<0.5') is False
     try:
         compute_row('bn_taker_buy_ratio_pre_60>0.5', cs, **kw)
         raise AssertionError("should have raised (no klines)")
