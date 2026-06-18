@@ -65,9 +65,22 @@ BN_CHG3600_RANK_UP = Strategy(
     direction='UP',
 )
 
+# ── cohort remine_20260618 — post trades→EP-purge re-mine on clean data ──
+# Only #4 armed→paper: bn_ klines, runtime-computable. 独立于 R4 (return-corr 0.15,
+# trigger-Jaccard 0.08) = 同向 diversifying 增量, 非冗余. #6 oi_chg_pct_1h survivor →
+# factors status=excluded runtime_ok=0 (无 futures runtime path, 待补 infra); #3
+# bn_chg3600_zs24h skip (与 BN_CHG3600_RANK_UP return-corr 0.64 冗余). bt audit → factor_panel.
+BN_TBR900_RANK_DN = Strategy(
+    'bn_tbr900_rank_dn',
+    'bn_taker_buy_ratio_pre_900__rank24h>0.9930555820465088',
+    entry_offset_s=30,
+    direction='DOWN',
+)
+
 ACTIVE: tuple[Strategy, ...] = (
     R4,
     BN_CHG1800_ZS_UP, BN_TBR300_DN, BN_CHG3600_RANK_UP,
+    BN_TBR900_RANK_DN,
 )
 
 
