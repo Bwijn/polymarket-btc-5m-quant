@@ -6,7 +6,7 @@ Verifies (regression-style) that:
   2. Detects any silent drift between mining batch impl and polybot SSOT impl.
 
 Usage:
-    uv run python scratch/tools/verify_compute_ssot.py [--n-events 100]
+    uv run python tools/verify_compute_ssot.py [--n-events 100]
 
 Exit 0 = byte-equal (no drift), exit 1 = drift detected (with first-mismatch detail).
 
@@ -22,12 +22,12 @@ import numpy as np
 import pandas as pd
 
 # Ensure polybot import works from anywhere
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from polybot.lib.compute import compute_bn_features
 
 DB = '/home/polymarket_work/db/pm_btc5m.db'
-FEATURES_DIR = Path('/home/polymarket_work/scratch/data')
+FEATURES_DIR = Path('/home/polymarket_work/research/data')
 
 
 def _check_dict_eq(actual: dict, expected: dict, tag: str, atol: float = 1e-9) -> list[str]:

@@ -78,8 +78,9 @@ def test_compute_and_evaluate_per_expr(scanner):
 
 def test_intra_feature_computed_from_trades(scanner):
     # trades-based INTRA compute actually yields a finite value (not all-NaN).
-    # std_intra_180_up is a plain base col (no transform) → lands directly in df.
-    v = _compute(scanner, "std_intra_180_up<0.04648745432496071").iloc[0]["std_intra_180_up"]
+    # p_intra_180_up (EP: last BUY ≤ cs+180, cap-immune) survives trades→EP migration
+    # as a plain base col (no transform) → lands directly in df. (fat std_intra_* dropped.)
+    v = _compute(scanner, "p_intra_180_up<0.99").iloc[0]["p_intra_180_up"]
     assert np.isfinite(v), f"INTRA compute from trades produced non-finite {v!r}"
 
 

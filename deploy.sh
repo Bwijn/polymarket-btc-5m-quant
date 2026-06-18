@@ -10,18 +10,18 @@ uv run --project polybot python -m pytest tests/ -q
 # evaluate per expr, INSERT/seed roundtrip, live order construction (no-fund-touch).
 
 echo "=== SSOT verify: mining ↔ polybot.lib.compute byte-equal ==="
-uv run python scratch/tools/verify_compute_ssot.py --n-events 30
+uv run python tools/verify_compute_ssot.py --n-events 30
 # Fails (exit 1) if mining batch impl diverges from polybot per-event impl.
-# Common cause: someone added math to mining/features/<x>.py without delegating
+# Common cause: someone added math to research/features/<x>.py without delegating
 # to polybot.lib.compute, or modified polybot without re-syncing mining.
 
 echo "=== Dashboard SSOT verify: ACTIVE ⊆ paper_candidates ==="
-uv run python scratch/tools/verify_active_audit.py
+uv run python tools/verify_active_audit.py
 # Fails (exit 1) if any ACTIVE strategy has no paper_candidates audit row.
 # Common cause: deploying a strategy without going through mining cycle INSERT.
 
 echo "=== Regen BASE_COLS from features.parquet (SSOT codegen) ==="
-uv run python scratch/tools/gen_base_cols.py
+uv run python tools/gen_base_cols.py
 
 echo "=== Deploying to VPS ==="
 rsync -avz \
