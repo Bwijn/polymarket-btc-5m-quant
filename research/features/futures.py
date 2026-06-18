@@ -16,7 +16,11 @@ def build() -> Path:
     events = pd.read_sql("SELECT cid, candle_start AS cs FROM events ORDER BY candle_start", con)
 
     funding = pd.read_sql("SELECT funding_ts_ms/1000 AS ts, funding_rate FROM binance_funding_rate ORDER BY funding_ts_ms", con)
-    oi      = pd.read_sql("SELECT ts_ms/1000 AS ts, sum_open_interest FROM binance_open_interest_hist ORDER BY ts_ms", con)
+    # OI from 5m table (not 1h): 1h sampling → oi_chg_pct const across 12 candles/hr =
+    # pseudo-replication (effN ~7× inflated, mirage). 5m sampling → per-candle distinct.
+    # Window stays 1h/4h below (meaningful magnitude; 5m WINDOW would be noise). Coverage
+    # ~05-20→ only (5m retention ~30d) → oi features NaN before that = honest preliminary.
+    oi      = pd.read_sql("SELECT ts_ms/1000 AS ts, sum_open_interest FROM binance_open_interest_hist_5m ORDER BY ts_ms", con)
     top_acct = pd.read_sql("SELECT ts_ms/1000 AS ts, long_short_ratio FROM binance_top_ls_account_ratio ORDER BY ts_ms", con)
     top_pos  = pd.read_sql("SELECT ts_ms/1000 AS ts, long_short_ratio FROM binance_top_ls_position_ratio ORDER BY ts_ms", con)
     gl_acct  = pd.read_sql("SELECT ts_ms/1000 AS ts, long_short_ratio FROM binance_global_ls_account_ratio ORDER BY ts_ms", con)
