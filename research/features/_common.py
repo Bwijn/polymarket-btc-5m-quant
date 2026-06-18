@@ -9,7 +9,7 @@ from pathlib import Path
 import pandas as pd
 
 DB = '/home/polymarket_work/db/pm_btc5m.db'
-OUT_DIR = Path('/home/polymarket_work/scratch/data')
+OUT_DIR = Path('/home/polymarket_work/research/data')
 
 
 def existing_cs(parquet_path: Path) -> set:

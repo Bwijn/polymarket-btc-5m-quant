@@ -16,9 +16,9 @@ Source → output mapping:
   merge     all sub-parquets joined on (cid, cs)    → features.parquet
 
 Usage:
-  uv run python scratch/research/build_features.py                       # all sources + merge
-  uv run python scratch/research/build_features.py --source pmtrades     # rebuild just one
-  uv run python scratch/research/build_features.py --source pmtrades --source transforms --source merge
+  uv run python research/features/build_features.py                       # all sources + merge
+  uv run python research/features/build_features.py --source pmtrades     # rebuild just one
+  uv run python research/features/build_features.py --source pmtrades --source transforms --source merge
                                                                           # rebuild + cascade
 """
 from __future__ import annotations
@@ -26,9 +26,11 @@ import argparse
 import sys
 from pathlib import Path
 
-# project root on sys.path so `polybot.lib.compute` resolves
-# (features/pmtrades.py delegates to polybot.lib.compute for SSOT)
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+# both project root (for `polybot.lib.compute` SSOT, which the builders delegate
+# math to) and research/ (so `from features import ...` resolves) on sys.path.
+_ROOT = Path(__file__).parent.parent.parent          # /home/polymarket_work
+sys.path.insert(0, str(_ROOT))                        # polybot.*
+sys.path.insert(0, str(_ROOT / 'research'))           # features.* (this pkg's parent)
 
 from features import binance, futures, merge, pmtrades, transforms
 from features._common import OUT_DIR
