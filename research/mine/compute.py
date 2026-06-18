@@ -7,8 +7,8 @@ Context: mine_gpu (MVP) conflated compute+selection (nev gate 焊进 GPU pass) a
   / walk-forward / mech-venue lenses, ∪) lives downstream in lenses.py + select.py.
   Composites (was Phase B) move to guided search (LightGBM/gplearn), built ON this 1-pred base.
 
-Source: scratch/data/features.parquet  (INPUT CONTRACT enforced by _validate_invariants)
-Expected: scratch/data/measurements_<run_at>.parquet — LONG: one row per (candidate × window),
+Source: research/data/features.parquet  (INPUT CONTRACT enforced by _validate_invariants)
+Expected: research/data/measurements_<run_at>.parquet — LONG: one row per (candidate × window),
   NO filter beyond a noise floor (full-window n_hit ≥ MIN_N_HIT_ABS).
 
 Key design choices (each a conscious decision, not a default):
@@ -43,8 +43,8 @@ sys.path.insert(0, '/home/polymarket_work')
 from polybot.lib.friction import backtest_friction_ratio
 from polybot.lib.gates import MIN_N_HIT_ABS, BT_TO_PAPER_DRIFT
 
-FEATURES = Path('/home/polymarket_work/scratch/data/features.parquet')
-OUT_DIR = Path('/home/polymarket_work/scratch/data')
+FEATURES = Path('/home/polymarket_work/research/data/features.parquet')
+OUT_DIR = Path('/home/polymarket_work/research/data')
 
 MAX_ENTRY_TIME_S = 270
 # et=0/15 dropped (too sparse for entry-price proxy; confirmed coverage probe 2026-05-23).

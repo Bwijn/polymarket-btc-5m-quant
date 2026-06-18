@@ -7,7 +7,7 @@ Context: collapse near-duplicate HYPOTHESES (FWE hygiene) before paper-test — 
   case") — containment over-folds a rare narrow factor into any broad one whose candles cover it.
   Trigger set = feature condition ∩ entry_valid (p_intra non-nan = actually tradeable candle).
   REVIEW tool (CSV + console); select.py productionizes (seed S=[R4], write paper_candidates).
-Source: scratch/data/{features.parquet, lens_candidates.parquet}.
+Source: research/data/{features.parquet, lens_candidates.parquet}.
 Expected: survivors_review.csv (cluster-annotated) + grouped console overview.
 """
 import sys
@@ -17,9 +17,9 @@ import pandas as pd
 sys.path.insert(0, '/home/polymarket_work')
 from polybot.lib.gates import FACTOR_DEDUP_JACCARD_MAX as FOLD_J   # Jaccard fold threshold (宽进)
 
-FEAT = '/home/polymarket_work/scratch/data/features.parquet'
-LENS = '/home/polymarket_work/scratch/data/lens_candidates.parquet'
-CSV  = '/home/polymarket_work/scratch/data/survivors_review.csv'
+FEAT = '/home/polymarket_work/research/data/features.parquet'
+LENS = '/home/polymarket_work/research/data/lens_candidates.parquet'
+CSV  = '/home/polymarket_work/research/data/survivors_review.csv'
 
 cand = pd.read_parquet(LENS)
 fit = (cand[(cand.fit_size) & (cand.lens_count == 3)]

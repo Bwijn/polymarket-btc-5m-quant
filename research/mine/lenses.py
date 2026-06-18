@@ -7,7 +7,7 @@ Context: compute.py emits raw per-(candidate × window) facts with NO gate. Sele
   robust). mech_venue is a TAG (cross-venue, for the composite/top-down stage), NOT an edge gate —
   kept OUT of lens_count.
 
-Source: scratch/data/measurements_<run_at>.parquet (LONG: candidate × window)
+Source: research/data/measurements_<run_at>.parquet (LONG: candidate × window)
 Expected: per-candidate frame {direction, lens_*, lens_count, passed, net_base, effN, wf_*, ...}.
   Persisting / dedup / paper_candidates write = select.py (next file); this only evaluates.
 
@@ -36,7 +36,7 @@ from polybot.lib.gates import (
     EP_BAND_LO, EP_BAND_HI,
 )
 
-DATA_DIR = Path('/home/polymarket_work/scratch/data')
+DATA_DIR = Path('/home/polymarket_work/research/data')
 
 # Cross-venue prefixes — binance leads PM price discovery (P5). TAG for the composite/top-down
 # pool, NOT an edge gate. A name PATTERN, not a number → logic lives here, not gates.py.
