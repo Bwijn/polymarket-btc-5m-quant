@@ -66,21 +66,28 @@ def _ensure_dashboard(eng) -> None:
             c.execute(text("INSERT INTO active_strategies (expr,direction,entry_offset_s,live) "
                            "VALUES (:e,:d,:o,:l)"),
                       {"e": s.expr, "d": s.direction, "o": s.entry_offset_s, "l": int(s.live)})
-        # net_pnl per-$1 = pnl_ratio_paper_net. t = mean·√n / sample_std (n>1 guard).
+        # net_pnl per-$1 = pnl_ratio_paper_net. n split: n_fired = signal fired & resolved;
+        # n_filled = of those, how many had a fillable book (pnl_ratio_paper_net NOT NULL).
+        # wr/mean_nev/t all share the n_filled base (no-fill rows can't enter EV) → self-consistent.
+        # AVG skips NULL so mean/var are already over filled; t must use n_filled in √n + Bessel too.
         c.execute(text("DROP VIEW IF EXISTS paper_active_agg"))
         c.execute(text("""CREATE VIEW paper_active_agg AS
             SELECT a.expr, a.direction, a.live,
-                   COUNT(*) AS n,
-                   ROUND(AVG(CASE WHEN (a.direction='UP'   AND p.up_won=1)
-                                    OR (a.direction='DOWN' AND p.up_won=0)
-                                  THEN 1.0 ELSE 0.0 END), 3) AS wr,
+                   COUNT(*) AS n_fired,
+                   SUM(p.pnl_ratio_paper_net IS NOT NULL) AS n_filled,
+                   ROUND(1.0*SUM(CASE WHEN p.pnl_ratio_paper_net IS NOT NULL
+                                       AND ((a.direction='UP'   AND p.up_won=1)
+                                         OR (a.direction='DOWN' AND p.up_won=0))
+                                      THEN 1 ELSE 0 END)
+                         / NULLIF(SUM(p.pnl_ratio_paper_net IS NOT NULL),0), 3) AS wr,
                    ROUND(AVG(p.pnl_ratio_paper_net), 4) AS mean_nev,
                    ROUND(SUM(p.pnl_usd_paper_net), 2) AS sum_usd_net,
-                   CASE WHEN COUNT(*) > 1 THEN ROUND(
-                     AVG(p.pnl_ratio_paper_net) * sqrt(COUNT(*)) /
+                   CASE WHEN SUM(p.pnl_ratio_paper_net IS NOT NULL) > 1 THEN ROUND(
+                     AVG(p.pnl_ratio_paper_net) * sqrt(SUM(p.pnl_ratio_paper_net IS NOT NULL)) /
                      sqrt((AVG(p.pnl_ratio_paper_net*p.pnl_ratio_paper_net)
                          - AVG(p.pnl_ratio_paper_net)*AVG(p.pnl_ratio_paper_net))
-                         * COUNT(*) / (COUNT(*)-1.0)), 2)
+                         * SUM(p.pnl_ratio_paper_net IS NOT NULL)
+                         / (SUM(p.pnl_ratio_paper_net IS NOT NULL)-1.0)), 2)
                    ELSE NULL END AS t,
                    MAX(p.settled_at_s) AS last_settle_s
             FROM paper_trade_5m_binary p
