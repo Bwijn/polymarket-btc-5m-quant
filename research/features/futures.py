@@ -26,29 +26,38 @@ def build() -> Path:
     gl_acct  = pd.read_sql("SELECT ts_ms/1000 AS ts, long_short_ratio FROM binance_global_ls_account_ratio ORDER BY ts_ms", con)
     con.close()
 
-    def asof_lookup(df_src: pd.DataFrame, col: str, ts_q: np.ndarray) -> np.ndarray:
+    def asof_lookup(df_src: pd.DataFrame, col: str, ts_q: np.ndarray,
+                    max_gap_s: float | None = None) -> np.ndarray:
+        """Backward as-of: most recent obs ≤ ts_q. max_gap_s NaNs hits staler than it —
+        guards silent carry-forward across ingest gaps (Q2); None = no guard."""
         if len(df_src) == 0:
             return np.full(len(ts_q), np.nan)
         src_ts = df_src['ts'].values
         idx = np.searchsorted(src_ts, ts_q, side='right') - 1
-        out = np.where(idx >= 0, df_src[col].values[np.clip(idx, 0, len(df_src)-1)], np.nan)
-        return out
+        clipped = np.clip(idx, 0, len(src_ts) - 1)
+        ok = idx >= 0
+        if max_gap_s is not None:
+            ok = ok & ((ts_q - src_ts[clipped]) <= max_gap_s)
+        return np.where(ok, df_src[col].values[clipped], np.nan)
 
+    # max staleness = native cadence ×2: carry-forward ≤1 period is normal, >2× = a
+    # missed obs = real gap → NaN not silent stale. native: funding 8h / OI 5m / LS 1h.
+    GAP_FUND, GAP_OI, GAP_LS = 2 * 28800, 2 * 300, 2 * 3600
     ts_q = events['cs'].values
     out_df = pd.DataFrame({'cid': events['cid'], 'cs': events['cs']})
-    out_df['fund_8h_now'] = asof_lookup(funding, 'funding_rate', ts_q)
-    fund_24h_ago = asof_lookup(funding, 'funding_rate', ts_q - 86400)
+    out_df['fund_8h_now'] = asof_lookup(funding, 'funding_rate', ts_q, GAP_FUND)
+    fund_24h_ago = asof_lookup(funding, 'funding_rate', ts_q - 86400, GAP_FUND)
     out_df['fund_chg_24h'] = out_df['fund_8h_now'] - fund_24h_ago
 
-    oi_now = asof_lookup(oi, 'sum_open_interest', ts_q)
-    oi_1h = asof_lookup(oi, 'sum_open_interest', ts_q - 3600)
-    oi_4h = asof_lookup(oi, 'sum_open_interest', ts_q - 4*3600)
+    oi_now = asof_lookup(oi, 'sum_open_interest', ts_q, GAP_OI)
+    oi_1h = asof_lookup(oi, 'sum_open_interest', ts_q - 3600, GAP_OI)
+    oi_4h = asof_lookup(oi, 'sum_open_interest', ts_q - 4*3600, GAP_OI)
     out_df['oi_chg_pct_1h'] = (oi_now - oi_1h) / oi_1h
     out_df['oi_chg_pct_4h'] = (oi_now - oi_4h) / oi_4h
 
-    out_df['ls_top_acct_ratio'] = asof_lookup(top_acct, 'long_short_ratio', ts_q)
-    out_df['ls_top_pos_ratio']  = asof_lookup(top_pos,  'long_short_ratio', ts_q)
-    out_df['ls_global_acct_ratio'] = asof_lookup(gl_acct, 'long_short_ratio', ts_q)
+    out_df['ls_top_acct_ratio'] = asof_lookup(top_acct, 'long_short_ratio', ts_q, GAP_LS)
+    out_df['ls_top_pos_ratio']  = asof_lookup(top_pos,  'long_short_ratio', ts_q, GAP_LS)
+    out_df['ls_global_acct_ratio'] = asof_lookup(gl_acct, 'long_short_ratio', ts_q, GAP_LS)
 
     out = OUT_DIR / '_features_futures.parquet'
     out_df.to_parquet(out, index=False, compression='zstd')
