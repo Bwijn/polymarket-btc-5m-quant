@@ -18,7 +18,7 @@ from polybot.runtime.scanner import Scanner
 from polybot.runtime.pm_ws import BookCache, TradesCache
 from polybot.runtime.models import PaperTrade5mBinary, TradeStatus, Direction
 from polybot.runtime.live_exec import LiveExecutor, LiveFill
-from polybot.runtime.config import BANKROLL_FRAC, LIVE_MIN_USD, LIVE_SLIPPAGE_CAP
+from polybot.runtime.config import BANKROLL_FRAC, LIVE_MIN_USD
 from polybot.strategies import R4
 
 from py_clob_client_v2 import OrderType
@@ -77,7 +77,7 @@ def test_place_live_buys_correct_side_size_price(tmp_path, monkeypatch):
     token, size, price_limit = fake.calls[0]
     assert token == DN_TOK, "R4 is DOWN → must buy the DOWN token"
     assert size == round(100.0 * BANKROLL_FRAC["R4"], 2)        # 5% of bankroll
-    assert price_limit == min(0.99, round(ep + LIVE_SLIPPAGE_CAP, 2))
+    assert price_limit == min(0.99, round(ep + R4.slippage_cap, 2))
     # _record_live persisted the fill onto the row
     from sqlmodel import Session
     with Session(sc.engine) as s:
@@ -101,7 +101,7 @@ def test_place_live_caps_price_limit_at_099(tmp_path, monkeypatch):
                                                  usdc_paid=5.0, shares=5.1, fill_price=5.0 / 5.1))
     sc = _scanner_with_fake_live(tmp_path, monkeypatch, fake)
     rid = _seed_row(sc)
-    asyncio.run(sc._place_live(rid, R4, M, 0.98))               # 0.98+0.03=1.01 → cap 0.99
+    asyncio.run(sc._place_live(rid, R4, M, 0.98))               # 0.98+0.10=1.08 → cap 0.99
     assert fake.calls[0][2] == 0.99
 
 

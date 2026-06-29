@@ -51,4 +51,5 @@ FUNDER       = "0x606970B1b66993A8E36C6CD41c1823317152f7ae" # proxy wallet (data
 # size auto-deflates as concurrent positions consume USDC.
 BANKROLL_FRAC     = {"R4": 0.05}      # killed factors removed; arm via Strategy.live + deploy
 LIVE_MIN_USD      = 1.0          # PM min order notional; skip live if size below
-LIVE_SLIPPAGE_CAP = 0.03         # BUY worst-price limit = entry_price_paper + cap
+# Per-factor BUY slippage cap moved onto Strategy.slippage_cap (strategies.py) —
+# a factor's execution knobs belong with the factor, not a label-keyed config dict.

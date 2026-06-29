@@ -22,7 +22,7 @@ from sqlmodel import Session, select, SQLModel, create_engine
 
 from polybot.runtime.config import (DB_FILE, SETTLE_LAG_S, PAPER_SIZE_USD,
                             SCHEDULE_REFRESH_S, SETTLE_POLL_S,
-                            LIVE_ENABLED, BANKROLL_FRAC, LIVE_MIN_USD, LIVE_SLIPPAGE_CAP)
+                            LIVE_ENABLED, BANKROLL_FRAC, LIVE_MIN_USD)
 from polybot.runtime.models import PaperTrade5mBinary, TradeStatus, Direction
 from polybot.runtime.live_exec import LiveExecutor, LiveFill
 from polybot.runtime.redeem import redeem_loop
@@ -224,7 +224,7 @@ class Scanner:
             log.warning(f"[{strat.label}] #{row_id} size ${size:.2f} < ${LIVE_MIN_USD} "
                         f"(wallet ${balance:.2f}) — skip live")
             return
-        price_limit = min(0.99, round(entry_price_paper + LIVE_SLIPPAGE_CAP, 2))
+        price_limit = min(0.99, round(entry_price_paper + strat.slippage_cap, 2))
         self._set_live_status(row_id, "placing")        # crash-recovery breadcrumb
         fill = await asyncio.to_thread(self.live.buy, token, size, price_limit)
         self._record_live(row_id, fill)
