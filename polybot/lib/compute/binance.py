@@ -28,6 +28,7 @@ def compute_bn_features(klines: pd.DataFrame, cs: int) -> dict:
                 out[f'bn_rv_{w}'] = np.nan
             if w in (60, 300, 900):
                 out[f'bn_taker_buy_ratio_pre_{w}'] = np.nan
+                out[f'bn_cvd_pre_{w}'] = np.nan
             if w == 60:
                 out['bn_vol_zscore_pre_60'] = np.nan
             if w in (300, 900):
@@ -44,7 +45,9 @@ def compute_bn_features(klines: pd.DataFrame, cs: int) -> dict:
 
         if w in (60, 300, 900):
             vol_sum = seg['volume'].sum()
-            out[f'bn_taker_buy_ratio_pre_{w}'] = seg['taker_buy_volume'].sum() / vol_sum if vol_sum > 0 else np.nan
+            tb = seg['taker_buy_volume'].sum()
+            out[f'bn_taker_buy_ratio_pre_{w}'] = tb / vol_sum if vol_sum > 0 else np.nan
+            out[f'bn_cvd_pre_{w}'] = 2 * tb - vol_sum   # signed taker vol = buy − sell
 
         if w == 60:
             seg_long = klines.loc[(klines.index >= cs - 3600) & (klines.index < cs)]

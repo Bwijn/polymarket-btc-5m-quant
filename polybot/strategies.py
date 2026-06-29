@@ -17,11 +17,18 @@ class Strategy:
     entry_offset_s: int   # seconds past candle_start to evaluate trigger + take entry price
     direction: str        # 'UP' | 'DOWN'
     live: bool = False    # place real orders (also gated by config.LIVE_ENABLED)
+    slippage_cap: float = 0.03  # live BUY ceiling = entry_ep + cap. Co-located with the
+    #                             factor (not a label-keyed config dict): the cap is part of
+    #                             the factor's execution identity, same category as `live`.
+    #                             EV-safe value ≈ breakeven_ep − typical_entry_ep. Default
+    #                             0.03 = conservative inherit for un-tuned factors.
 
     def __post_init__(self):
         validate(self.expr)
         if self.direction not in ('UP', 'DOWN'):
             raise ValueError(f"bad direction {self.direction!r}")
+        if not 0 <= self.slippage_cap < 0.5:    # money-path fat-finger guard
+            raise ValueError(f"slippage_cap {self.slippage_cap} out of [0,0.5)")
 
 
 # bt audit lives in the factors table (pm_btc5m.db) — query factor_panel for nev / n_hit / cycle_tag.
@@ -33,12 +40,19 @@ class Strategy:
 # 5% bankroll (paper n=131 t=2.45 nev+20.7%; 95% CI 下界+4.1% 擦 5% → 小额上线收窄 CI).
 # 同 cycle 5 个 (R2/P1-P4) per-$1 OOS+paper 双弱 → killed (factors status, 2026-06-01).
 # 'R4' = grandfathered label (历史 paper 行连续); 未来 factor 按 expr 索引, label 仅 log.
+# slippage_cap=0.10 (was global 0.03 — too tight, FOK-killed the 9 highest-EV fills:
+# paper +27% nev vs +1.3% on filled rows; real small-order slippage ≈0 so the cap, not
+# book depth, was binding, verified 2026-06-21). 0.10 favors catching latency-fills over
+# EV-margin: at avg entry 0.543 it allows price_limit 0.643 > breakeven_ep≈0.615 (wr 0.632)
+# → rare fills in (0.615,0.643] are −EV, but bounded at −stake (no blowup) and entries
+# seldom reach there. Strict-EV alternative = floor price_limit at breakeven_ep (deferred).
 R4 = Strategy(
     'R4',
     'bn_taker_buy_ratio_pre_300>0.7554713487625122 & bn_vol_zscore_pre_60__zs24h>0.3679429590702057',
     entry_offset_s=0,
     direction='DOWN',
     live=True,
+    slippage_cap=0.10,
 )
 
 # ── cohort lens_jaccard_20260614 — 11 dedup-rep, klines-only deploy (2026-06-15) ──
@@ -77,10 +91,31 @@ BN_TBR900_RANK_DN = Strategy(
     direction='DOWN',
 )
 
+# ── cohort cvd_20260629 — signed-CVD (2·taker_buy−vol) taker-flow reversals ──
+# 2 indep signals from 15-col CVD scorecard → dedup (busy-inclusive nb_fold + full
+# return-corr matrix vs roster). A=60s reversal UP (全 roster 正交, max corr 0.065);
+# B=5min reversal DOWN (唯一同向 +0.238 vs R4, 折叠线下=diversifying; FCFS et0 下 R4
+# 抢锁 candle → 物理 overbet≈0). entry_offset_s=0: signal 纯后向→cs+0 已知, fixed-sample
+# ep 路径证 et0 更便宜 (白嫖, 同 R4). zs7d 双生子 excluded (与 A redundant corr 0.82).
+# bt audit → factors (factor_panel). armed→paper 起 OOS clock.
+BN_CVD60_UP = Strategy(
+    'cvd60_up',
+    'bn_cvd_pre_60<-31.5946056',
+    entry_offset_s=0,
+    direction='UP',
+)
+BN_CVD300_DN = Strategy(
+    'cvd300_dn',
+    'bn_cvd_pre_300>74.55732519999998',
+    entry_offset_s=0,
+    direction='DOWN',
+)
+
 ACTIVE: tuple[Strategy, ...] = (
     R4,
     BN_CHG1800_ZS_UP, BN_TBR300_DN, BN_CHG3600_RANK_UP,
     BN_TBR900_RANK_DN,
+    BN_CVD60_UP, BN_CVD300_DN,
 )
 
 
