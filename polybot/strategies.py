@@ -55,27 +55,23 @@ R4 = Strategy(
     slippage_cap=0.10,
 )
 
-# ── cohort lens_jaccard_20260614 — 11 dedup-rep, klines-only deploy (2026-06-15) ──
-# 仅 3 个 bn_ klines 进 paper (零 4k-cap 污染). 6 个 trades-based defer: PM /trades 4k-cap
-# 同时污染触发 candle 与 zs/rank 参考分布 → capped_frac 是不完整 filter; 干净 trades 史
-# 只能前向 WS 录, 故 trades-dark 至下个 cycle. 2 个 futures rep runtime_ok=0. 全 entry=cs+30s.
-# defer 决策 audit 在 factors (status=excluded); bt audit 同表 (factor_panel).
-BN_CHG1800_ZS_UP = Strategy(
-    'bn_chg1800_zs_up',
-    'bn_chg_pct_pre_1800__zs7d<-2.831822395324707',
-    entry_offset_s=30,
-    direction='UP',
-)
+# ── cohort lens_jaccard_20260614 — bt benchmark 用 et=30 proxy-EP (ep_panel 亦 trades
+# 提取, 非干净基准), 该准入 record 不可信 → 以 clean paper OOS 为准 (wr 对 et 不变).
+# pre-signal 开盘前(cs前)即定 → 全部 et=0 (同信号更便宜 EP, 无理由留 et=30):
+#   chg1800 wr 崩塌 68→41 (p≈1e-5 非运气) → killed (audit 在 factors).
+#   chg3600 wr 守住 64→62 → flip et=0.  tbr300 wr 64→56 (>50%, EP-limited) → flip et=0.
+# 三者历史 et=30 paper 行已 relabel→et=0 (EP 不动=贵 → conservative 下界; wr 对 et 不变)
+# 并入各自 et=0 OOS, 非作废. 带贵 EP 还能 graduate = 真 edge.
 BN_TBR300_DN = Strategy(
     'bn_tbr300_dn',
     'bn_taker_buy_ratio_pre_300>0.8700732588768005',
-    entry_offset_s=30,
+    entry_offset_s=0,
     direction='DOWN',
 )
 BN_CHG3600_RANK_UP = Strategy(
     'bn_chg3600_rank_up',
     'bn_chg_pct_pre_3600__rank24h<0.0069444444961845875',
-    entry_offset_s=30,
+    entry_offset_s=0,
     direction='UP',
 )
 
@@ -84,10 +80,11 @@ BN_CHG3600_RANK_UP = Strategy(
 # trigger-Jaccard 0.08) = 同向 diversifying 增量, 非冗余. #6 oi_chg_pct_1h survivor →
 # factors status=excluded runtime_ok=0 (无 futures runtime path, 待补 infra); #3
 # bn_chg3600_zs24h skip (与 BN_CHG3600_RANK_UP return-corr 0.64 冗余). bt audit → factor_panel.
+# bt 亦 et=30 proxy-EP → 同 lens: wr 守住 64→61 → flip et=0 (历史行同 relabel 并入).
 BN_TBR900_RANK_DN = Strategy(
     'bn_tbr900_rank_dn',
     'bn_taker_buy_ratio_pre_900__rank24h>0.9930555820465088',
-    entry_offset_s=30,
+    entry_offset_s=0,
     direction='DOWN',
 )
 
@@ -113,7 +110,7 @@ BN_CVD300_DN = Strategy(
 
 ACTIVE: tuple[Strategy, ...] = (
     R4,
-    BN_CHG1800_ZS_UP, BN_TBR300_DN, BN_CHG3600_RANK_UP,
+    BN_TBR300_DN, BN_CHG3600_RANK_UP,
     BN_TBR900_RANK_DN,
     BN_CVD60_UP, BN_CVD300_DN,
 )
