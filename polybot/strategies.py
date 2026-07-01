@@ -55,13 +55,7 @@ R4 = Strategy(
     slippage_cap=0.10,
 )
 
-# ── cohort lens_jaccard_20260614 — bt benchmark 用 et=30 proxy-EP (ep_panel 亦 trades
-# 提取, 非干净基准), 该准入 record 不可信 → 以 clean paper OOS 为准 (wr 对 et 不变).
-# pre-signal 开盘前(cs前)即定 → 全部 et=0 (同信号更便宜 EP, 无理由留 et=30):
-#   chg1800 wr 崩塌 68→41 (p≈1e-5 非运气) → killed (audit 在 factors).
-#   chg3600 wr 守住 64→62 → flip et=0.  tbr300 wr 64→56 (>50%, EP-limited) → flip et=0.
-# 三者历史 et=30 paper 行已 relabel→et=0 (EP 不动=贵 → conservative 下界; wr 对 et 不变)
-# 并入各自 et=0 OOS, 非作废. 带贵 EP 还能 graduate = 真 edge.
+# ── cohort lens_jaccard_20260614 — bn_ klines paper factors; bt/dedup audit → factors.
 BN_TBR300_DN = Strategy(
     'bn_tbr300_dn',
     'bn_taker_buy_ratio_pre_300>0.8700732588768005',
@@ -80,7 +74,6 @@ BN_CHG3600_RANK_UP = Strategy(
 # trigger-Jaccard 0.08) = 同向 diversifying 增量, 非冗余. #6 oi_chg_pct_1h survivor →
 # factors status=excluded runtime_ok=0 (无 futures runtime path, 待补 infra); #3
 # bn_chg3600_zs24h skip (与 BN_CHG3600_RANK_UP return-corr 0.64 冗余). bt audit → factor_panel.
-# bt 亦 et=30 proxy-EP → 同 lens: wr 守住 64→61 → flip et=0 (历史行同 relabel 并入).
 BN_TBR900_RANK_DN = Strategy(
     'bn_tbr900_rank_dn',
     'bn_taker_buy_ratio_pre_900__rank24h>0.9930555820465088',
