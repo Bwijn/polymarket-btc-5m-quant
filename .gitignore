@@ -37,8 +37,13 @@ __pycache__/
 /research/data/
 
 # research loose top-level scripts = throwaway probes/tools (ignored).
-# permanent pipeline lives only in subdirs (features/ ingestion/ mine/) → tracked.
+# permanent pipeline lives only in subdirs (features/ ingestion/) → tracked.
 /research/*.py
+
+# research/mine/ = mining workspace; ONLY metrics.py (math SSOT) tracked, rest ignored.
+# scorecards / dedup / compute = 消费 metrics 的分析脚本 = 本地时间胶囊, git log 不维护.
+/research/mine/*
+!/research/mine/metrics.py
 
 # research/probe/ = throwaway probe scripts (debug time-capsules, not pipeline) → ignored
 /research/probe/

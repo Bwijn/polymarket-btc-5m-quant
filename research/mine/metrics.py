@@ -4,7 +4,7 @@ Context: metric 算法之前散落在 compute.py / lenses.py / 各 scorecard 脚
   (静默漂移) 风险 (friction.py 同款教训: PM rate 0.072→0.07 只靠偶然 probe 抓到). 这里收口成
   唯一定义. 三根 SSOT 柱子分工: friction.py=成本模型(scanner 也用) / gates.py=政策阈值 /
   本模块=测量算法(research-only). 本模块 import 前两者的常量, 不重复定义.
-Source: 被 cvd_scorecard.py (及未来任何 family scorecard) import; 数据来自 features.parquet.
+Source: 被 wick_scorecard.py (及未来任何 family scorecard) import; 数据来自 features.parquet.
 
 铁律: 本模块 ZERO gate 常量. gate=policy 留 gates.py; metric=measurement, gate-free —— 这正是
   「gate 会逐 cycle churn 但测量数学不变」能成立的前提. 加 metric = 多一个函数, 不碰已有的.
@@ -22,6 +22,12 @@ Metric 注册表 (= 列 SSOT; 每 metric 的 coverage 分母不同, 手动遴选
   wf_sign_frac      占比{周(n≥min) | 该周 nev>0}                    n_wk   (周)
   valid_fraction    n_hit / n_raw                                 n_raw  (全触发)
   d = BT_TO_PAPER_DRIFT (ep-space drift); fee = backtest_friction_ratio (= PM taker on ep+d).
+
+Dedup 测量 (pairwise, 不入 scorecard 列; 两个正交 lens, NS1 ⑤ 别混):
+  jaccard           |A∩B|/|A∪B|  (bool fire-masks)              同一 hypothesis? (FWE)
+  stream_corr       Pearson(ret_a, ret_b), drop_k robust        收益共动? (Kelly/overbet)
+  Jaccard 硬 gate = FACTOR_DEDUP_JACCARD_MAX (gates.py); stream_corr = 参考线, 非 gate
+  (full-stream 有 1/ep 凸性脆弱 → 稳健版 = drop_k 剔 top 协方差贡献点, cheap-ep mirage 会塌).
 """
 from __future__ import annotations
 import sys
@@ -98,3 +104,25 @@ def wf_sign_frac(win, ep, week, drift=DRIFT, min_week_n=WF_MIN_WEEK_N):
 def valid_fraction(n_hit, n_raw):
     """有效触发占比 = n_hit / n_raw. 1−vfrac = 实盘 NaN-ep 稀释比例 (book_ask 仍下单但无 edge). 分母=n_raw."""
     return n_hit / n_raw if n_raw else np.nan
+
+
+def jaccard(a, b):
+    """触发集重合 |A∩B|/|A∪B| of 两 bool fire-mask. 同向 factor 同一 hypothesis? (FWE).
+    对称, 硬 gate=FACTOR_DEDUP_JACCARD_MAX(gates.py). 空并集→0."""
+    a, b = np.asarray(a, bool), np.asarray(b, bool)
+    u = int((a | b).sum())
+    return int((a & b).sum()) / u if u else 0.0
+
+
+def stream_corr(a, b, drop_k=0):
+    """full-stream Pearson of 两 per-candle net-return 流 (含未触发 0 → 非退化, 收益共动=Kelly/overbet).
+    drop_k>0 = robust: 剔 |协方差贡献 (aᵢ−ā)(bᵢ−b̄)| 最大的 k 点后重算 → cheap-ep mirage
+    (少数点撑起的高 corr) 会塌, 真冗余不塌. 参考线非 gate. 任一常数流→0."""
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    if drop_k > 0:
+        contrib = np.abs((a - a.mean()) * (b - b.mean()))
+        keep = np.ones(len(a), bool); keep[np.argsort(-contrib)[:drop_k]] = False
+        a, b = a[keep], b[keep]
+    if a.std() == 0 or b.std() == 0:
+        return 0.0
+    return float(np.corrcoef(a, b)[0, 1])

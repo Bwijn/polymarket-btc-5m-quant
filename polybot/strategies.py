@@ -101,11 +101,35 @@ BN_CVD300_DN = Strategy(
     direction='DOWN',
 )
 
+# ── cohort wick_20260715 — cvd 量价背离拆腿 (chg-leg) reversal, chgdn leg ──
+# 2 indep signals from 7 STEP A survivors (nb_fill>0.05 → primary gates nbw>0 & drop5≥0) →
+# dedup (Jaccard 硬折 + full-stream corr, drop-k 验 mirage). 两个都是 chgdn leg (cvd on
+# chg<0 candle) 但 window/norm/dir 全不同 → 天然独立:
+#   A 900s·zs7d·空 = chgdn_900 家族 3 变体折成 1, 独立于全 roster (max corr 0.11);
+#   B 300s·zs24h·多 = chgdn_300 家族折成 1; vs chg3600_rank_up corr 0.69 是 cheap-ep MIRAGE
+#     (drop-1→0.33 塌, Jac 0.075 才是真) → 实独立.
+# 弃: chgup_300 家族 = cvd300_dn 换皮 (88% containment, drop-k 不塌, 真冗余).
+# entry_offset_s=0: signal 纯后向 → cs+0 已知 (白嫖, 同 R4). thin rep (dens 7.1/6.7):
+# nbw 高但有 selection-overfit (nbw 抓不到), OOS 盯. bt audit → factors (factor_panel).
+BN_CHGDN900_ZS7D_DN = Strategy(
+    'chgdn900_zs7d_dn',
+    'bn_cvd_chgdn_pre_900__zs7d>2.065384420322053',
+    entry_offset_s=0,
+    direction='DOWN',
+)
+BN_CHGDN300_ZS24H_UP = Strategy(
+    'chgdn300_zs24h_up',
+    'bn_cvd_chgdn_pre_300__zs24h<-4.189148035999758',
+    entry_offset_s=0,
+    direction='UP',
+)
+
 ACTIVE: tuple[Strategy, ...] = (
     R4,
     BN_TBR300_DN, BN_CHG3600_RANK_UP,
     BN_TBR900_RANK_DN,
     BN_CVD60_UP, BN_CVD300_DN,
+    BN_CHGDN900_ZS7D_DN, BN_CHGDN300_ZS24H_UP,
 )
 
 

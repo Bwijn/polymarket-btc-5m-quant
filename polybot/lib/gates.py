@@ -105,9 +105,11 @@ FACTOR_DEDUP_JACCARD_MAX = 0.75
 # (same-dir pair size-ratio median 1.0, no extreme nesting) → robustness/principle choice,
 # error direction 宽进-safe (mis-fold loses a hypothesis irreversibly; mis-keep = mild
 # waste, paper-t kills). No valley (smooth gradient: Jaccard 0.65→40 / 0.75→52 / 0.85→64).
-# Also retired: PnL-corr dedup (intersection-corr degenerates — same-dir factors share
-# candle outcome `won` → corr≈1; script removed, conclusion kept here).
-# Evidence: scratch/research/mine/verify_dedup.py.
+# Also: intersection-corr dedup (交集口径, 只共同触发 candle) retired — degenerate
+# (same-dir share `won` → corr≈±1, no variance). Its non-degenerate successor =
+# full-stream corr (全流口径, 含未触发 0) lives as a REFERENCE lens (not a hard gate):
+# metrics.py:stream_corr (math SSOT) + drop-k mirage 稳健化, applied per-cohort dedup.
+# Jaccard remains the sole hard fold gate here.
 
 
 # ════════════════════════════════════════════════════════════════════════════

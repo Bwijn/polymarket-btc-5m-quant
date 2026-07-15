@@ -33,6 +33,12 @@ def compute_bn_features(klines: pd.DataFrame, cs: int) -> dict:
                 out['bn_vol_zscore_pre_60'] = np.nan
             if w in (300, 900):
                 out[f'bn_hl_range_pre_{w}'] = np.nan
+                out[f'bn_clv_pre_{w}'] = np.nan
+                out[f'bn_cvd_chgdn_pre_{w}'] = np.nan
+                out[f'bn_cvd_chgup_pre_{w}'] = np.nan
+            if w == 900:
+                out['bn_secs_since_low_900'] = np.nan
+                out['bn_secs_since_high_900'] = np.nan
             continue
 
         close_now   = seg['close'].iloc[-1]
@@ -60,5 +66,19 @@ def compute_bn_features(klines: pd.DataFrame, cs: int) -> dict:
         if w in (300, 900):
             hi, lo = seg['high'].max(), seg['low'].min()
             out[f'bn_hl_range_pre_{w}'] = (hi - lo) / close_start if close_start else np.nan
+            # close location value: close position within window range, [0,1]
+            out[f'bn_clv_pre_{w}'] = (close_now - lo) / (hi - lo) if hi > lo else np.nan
+            # CVD partitioned by sign(chg) (direction-pure divergence legs);
+            # NaN leg = condition not met (chg NaN → both legs NaN)
+            cvd, chg = out[f'bn_cvd_pre_{w}'], out[f'bn_chg_pct_pre_{w}']
+            out[f'bn_cvd_chgdn_pre_{w}'] = cvd if chg < 0 else np.nan
+            out[f'bn_cvd_chgup_pre_{w}'] = cvd if chg > 0 else np.nan
+
+        if w == 900:
+            # secs since most recent bar printing window extreme (re-touch restarts
+            # the hold clock); bar-open anchored → {60,...,900} step 60
+            lows, highs = seg['low'], seg['high']
+            out['bn_secs_since_low_900'] = float(cs - lows[lows == lows.min()].index.max())
+            out['bn_secs_since_high_900'] = float(cs - highs[highs == highs.max()].index.max())
 
     return out

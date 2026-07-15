@@ -28,6 +28,11 @@ async def fetch_klines(start_s: int, end_s: int, symbol: str = "BTCUSDT") -> pd.
     binance_klines table (open, high, low, close, volume, quote_volume,
     taker_buy_volume).
 
+    Boundary invariant: /klines endTime is inclusive on OPEN time. When end_s is
+    a minute boundary the LAST row is the still-forming candle (open==end_s,
+    partial/unfinalized) — NOT a closed bar. Consumers MUST slice `index < cs`
+    before use (compute_bn_features does); never `.iloc[-1]` on the raw frame.
+
     Returns empty DataFrame on HTTP error (caller handles missing data via NaN).
     """
     params = {
