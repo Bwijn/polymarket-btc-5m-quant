@@ -27,10 +27,6 @@ SETTLE_LAG_S      = 60        # wait past cs+300 before trying settle (resolutio
 SCHEDULE_REFRESH_S = 60       # rescan upcoming candles + register schedule tasks
 SETTLE_POLL_S     = 30        # poll open rows for settle
 
-# size_usd_intended recorded per paper trade (Kelly applied per-strategy in scanner —
-# this is fallback / nominal). Real wallet = $34.13, 5% Kelly → $1.71.
-PAPER_SIZE_USD    = 1.70
-
 # Asset (binary 5m). Single asset for now.
 ASSET_PREFIX      = "btc-updown-5m-"     # slug = ASSET_PREFIX + str(cs)
 

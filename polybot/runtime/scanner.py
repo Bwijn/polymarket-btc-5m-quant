@@ -20,7 +20,7 @@ import time
 from typing import Optional
 from sqlmodel import Session, select, SQLModel, create_engine
 
-from polybot.runtime.config import (DB_FILE, SETTLE_LAG_S, PAPER_SIZE_USD,
+from polybot.runtime.config import (DB_FILE, SETTLE_LAG_S,
                             SCHEDULE_REFRESH_S, SETTLE_POLL_S,
                             LIVE_ENABLED, BANKROLL_FRAC, LIVE_MIN_USD)
 from polybot.runtime.models import PaperTrade5mBinary, TradeStatus, Direction
@@ -66,34 +66,46 @@ def _ensure_dashboard(eng) -> None:
             c.execute(text("INSERT INTO active_strategies (expr,direction,entry_offset_s,live) "
                            "VALUES (:e,:d,:o,:l)"),
                       {"e": s.expr, "d": s.direction, "o": s.entry_offset_s, "l": int(s.live)})
-        # net_pnl per-$1 = pnl_ratio_paper_net. n split: n_fired = signal fired & resolved;
-        # n_filled = of those, how many had a fillable book (pnl_ratio_paper_net NOT NULL).
-        # wr/mean_nev/t all share the n_filled base (no-fill rows can't enter EV) → self-consistent.
-        # AVG skips NULL so mean/var are already over filled; t must use n_filled in √n + Bessel too.
+        # n_fired = signal fired & resolved; n_pap = of those, fillable book (ratio NOT NULL).
+        # PAPER cols are ratio-only (pap_nev/pap_t): paper size fixed 1.7 → usd ≡ 1.7×ratio =
+        # linear mirror (zero new info + vanity), and the gate is ratio-based → drop paper usd.
+        # nev50 = mean nev over last-50 fires: full-history AVG hides decay (early wins prop it
+        # up); nev50 shows CURRENT edge in one row → the signal the "decay → demote" gate needs.
+        # LIVE cols (real wallet, %-of-balance/Kelly → size varies) carry usd — the only figure
+        # ratio can't reconstruct. drift = same-set paper−live (mining bakes a +0.015 defensive
+        # constant; this measures the realized gap). AVG skips NULL → live cols null for paper-only.
         c.execute(text("DROP VIEW IF EXISTS paper_active_agg"))
         c.execute(text("""CREATE VIEW paper_active_agg AS
-            SELECT a.expr, a.direction, a.live,
+            WITH r AS (
+                SELECT a.expr, a.direction, a.live, p.up_won, p.settled_at_s,
+                       p.pnl_ratio_paper_net AS pr, p.pnl_ratio_live_net AS lr,
+                       p.pnl_usd_live_net AS lu,
+                       ROW_NUMBER() OVER (PARTITION BY a.expr ORDER BY p.settled_at_s DESC) AS rn
+                FROM paper_trade_5m_binary p
+                JOIN active_strategies a ON p.expr = a.expr
+                WHERE p.status='settled')
+            SELECT expr, direction, live,
                    COUNT(*) AS n_fired,
-                   SUM(p.pnl_ratio_paper_net IS NOT NULL) AS n_filled,
-                   ROUND(1.0*SUM(CASE WHEN p.pnl_ratio_paper_net IS NOT NULL
-                                       AND ((a.direction='UP'   AND p.up_won=1)
-                                         OR (a.direction='DOWN' AND p.up_won=0))
+                   SUM(pr IS NOT NULL) AS n_pap,
+                   ROUND(1.0*SUM(CASE WHEN pr IS NOT NULL
+                                       AND ((direction='UP'   AND up_won=1)
+                                         OR (direction='DOWN' AND up_won=0))
                                       THEN 1 ELSE 0 END)
-                         / NULLIF(SUM(p.pnl_ratio_paper_net IS NOT NULL),0), 3) AS wr,
-                   ROUND(AVG(p.pnl_ratio_paper_net), 4) AS mean_nev,
-                   ROUND(SUM(p.pnl_usd_paper_net), 2) AS sum_usd_net,
-                   CASE WHEN SUM(p.pnl_ratio_paper_net IS NOT NULL) > 1 THEN ROUND(
-                     AVG(p.pnl_ratio_paper_net) * sqrt(SUM(p.pnl_ratio_paper_net IS NOT NULL)) /
-                     sqrt((AVG(p.pnl_ratio_paper_net*p.pnl_ratio_paper_net)
-                         - AVG(p.pnl_ratio_paper_net)*AVG(p.pnl_ratio_paper_net))
-                         * SUM(p.pnl_ratio_paper_net IS NOT NULL)
-                         / (SUM(p.pnl_ratio_paper_net IS NOT NULL)-1.0)), 2)
-                   ELSE NULL END AS t,
-                   MAX(p.settled_at_s) AS last_settle_s
-            FROM paper_trade_5m_binary p
-            JOIN active_strategies a ON p.expr = a.expr
-            WHERE p.status='settled'
-            GROUP BY a.expr, a.direction, a.live"""))
+                         / NULLIF(SUM(pr IS NOT NULL),0), 3) AS wr,
+                   ROUND(AVG(pr), 4) AS pap_nev,
+                   CASE WHEN SUM(pr IS NOT NULL) > 1 THEN ROUND(
+                     AVG(pr) * sqrt(SUM(pr IS NOT NULL)) /
+                     sqrt((AVG(pr*pr) - AVG(pr)*AVG(pr))
+                         * SUM(pr IS NOT NULL) / (SUM(pr IS NOT NULL)-1.0)), 2)
+                   ELSE NULL END AS pap_t,
+                   ROUND(AVG(CASE WHEN rn<=50 THEN pr END), 4) AS nev50,
+                   SUM(lr IS NOT NULL) AS n_live,
+                   ROUND(AVG(lr), 4) AS live_nev,
+                   ROUND(SUM(lu), 2) AS live_usd,
+                   ROUND(AVG(pr - lr), 4) AS drift,
+                   MAX(settled_at_s) AS last_settle_s
+            FROM r
+            GROUP BY expr, direction, live"""))
 
 
 class Scanner:
@@ -185,7 +197,6 @@ class Scanner:
             book_ts_ms_up=book_ts_ms_up,
             book_ts_ms_dn=book_ts_ms_dn,
             entry_price_paper=entry_price_paper,
-            size_usd_intended=PAPER_SIZE_USD,
             status=TradeStatus.open,
             opened_at_s=int(time.time()),
         )
@@ -193,8 +204,7 @@ class Scanner:
             s.add(row)
             s.commit()
             s.refresh(row)
-        log.info(f"[{strat.label}] HIT cs={cs} entry_paper={entry_price_paper} "
-                 f"size=${PAPER_SIZE_USD:.2f} #{row.id}")
+        log.info(f"[{strat.label}] HIT cs={cs} entry_paper={entry_price_paper} #{row.id}")
 
         # live track: place the real order for promoted strategies. Paper row is
         # already committed above — a live failure never touches the paper track.
@@ -272,21 +282,15 @@ class Scanner:
             (row.direction == 'DOWN' and m['up_won'] == 0)
         )
         # paper pnl ratio (only if we captured book_ask at trigger). Gross of fee;
-        # fee_usd_paper / *_net columns below carry the friction-adjusted view.
+        # pnl_ratio_paper_net below carries the friction-adjusted view (ratio SSOT).
         # bt pnl + drift_paper_backtest removed 2026-05-26 — derived on-demand via
         # scratch/research/compute_drift.py (PM /trades reproducible truth).
-        pnl_ratio_paper = pnl_usd_paper = None
-        fee_usd = pnl_usd_paper_net = pnl_ratio_paper_net = None
+        pnl_ratio_paper = pnl_ratio_paper_net = None
         if row.entry_price_paper is not None and row.entry_price_paper > 0:
-            if my_won:
-                pnl_ratio_paper = (1.0 - row.entry_price_paper) / row.entry_price_paper
-            else:
-                pnl_ratio_paper = -1.0
-            pnl_usd_paper = pnl_ratio_paper * row.size_usd_intended
-            fee_ratio = paper_friction_ratio(row.entry_price_paper)
-            fee_usd = row.size_usd_intended * fee_ratio
-            pnl_usd_paper_net = pnl_usd_paper - fee_usd
-            pnl_ratio_paper_net = pnl_ratio_paper - fee_ratio
+            pnl_ratio_paper = ((1.0 - row.entry_price_paper) / row.entry_price_paper
+                               if my_won else -1.0)
+            # paper is ratio-only (abs-USD dropped 2026-07-17: usd ≡ size×ratio mirror)
+            pnl_ratio_paper_net = pnl_ratio_paper - paper_friction_ratio(row.entry_price_paper)
 
         # live track pnl (only if a real order filled). Winning live pnl is the
         # economic truth at resolution; converting shares→USDC needs redeem.
@@ -306,9 +310,6 @@ class Scanner:
             db_row.status = TradeStatus.settled
             db_row.up_won = m['up_won']
             db_row.pnl_ratio_paper = pnl_ratio_paper
-            db_row.pnl_usd_paper = pnl_usd_paper
-            db_row.fee_usd_paper = fee_usd
-            db_row.pnl_usd_paper_net = pnl_usd_paper_net
             db_row.pnl_ratio_paper_net = pnl_ratio_paper_net
             db_row.pnl_ratio_live = pnl_ratio_live
             db_row.pnl_ratio_live_net = pnl_ratio_live_net

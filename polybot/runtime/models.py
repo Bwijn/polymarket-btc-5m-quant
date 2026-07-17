@@ -60,9 +60,6 @@ class PaperTrade5mBinary(SQLModel, table=True):
     opened_at_s: int
     settled_at_s: int | None = None
 
-    # ---- sizing input ----
-    size_usd_intended: float                  # Kelly target notional; paper + live share it
-
     # ---- bt track REMOVED 2026-05-26 — derived on-demand via PM /trades endpoint
     # (reproducible truth). See scratch/research/compute_drift.py.
     # Dropped cols: p_up_at_entry_backtest, entry_price_backtest, trigger_features_backtest,
@@ -76,11 +73,8 @@ class PaperTrade5mBinary(SQLModel, table=True):
     book_ts_ms_up: int | None = None
     book_ts_ms_dn: int | None = None
     entry_price_paper: float | None = None    # direction-aware: UP→ask_up, DOWN→ask_dn
-    fee_usd_paper: float | None = None        # size_usd_intended * fee_ratio(entry_price_paper)
     pnl_ratio_paper: float | None = None
-    pnl_ratio_paper_net: float | None = None
-    pnl_usd_paper: float | None = None
-    pnl_usd_paper_net: float | None = None
+    pnl_ratio_paper_net: float | None = None  # ratio SSOT — the only paper metric promote reads
 
     # ---- live track: real order on PM CLOB (only when Strategy.live + LIVE_ENABLED) ----
     order_id: str | None = None
