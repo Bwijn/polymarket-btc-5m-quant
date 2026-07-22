@@ -15,7 +15,7 @@ import pytest
 
 import polybot.runtime.scanner as scanner_mod
 from polybot.runtime.scanner import Scanner
-from polybot.runtime.pm_ws import BookCache, TradesCache
+from polybot.runtime.pm_ws import BookCache
 from polybot.runtime.models import PaperTrade5mBinary, TradeStatus, Direction
 from polybot.runtime.live_exec import LiveExecutor, LiveFill
 from polybot.runtime.config import BANKROLL_FRAC, LIVE_MIN_USD
@@ -43,7 +43,7 @@ class FakeLive:
 
 def _scanner_with_fake_live(tmp_path, monkeypatch, fake):
     monkeypatch.setattr(scanner_mod, "LIVE_ENABLED", False)   # no real LiveExecutor
-    sc = Scanner(str(tmp_path / "live.db"), book_cache=BookCache(), trades_cache=TradesCache())
+    sc = Scanner(str(tmp_path / "live.db"), book_cache=BookCache())
     assert sc.live is None
     sc.live = fake                                            # inject mock
     return sc

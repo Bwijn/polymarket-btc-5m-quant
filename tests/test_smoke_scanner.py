@@ -11,7 +11,6 @@ column — see migration 001). Any break → exit 1.
 import json
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import pytest
 from sqlalchemy import text
@@ -19,7 +18,7 @@ from sqlmodel import Session
 
 import polybot.runtime.scanner as scanner_mod
 from polybot.runtime.scanner import Scanner
-from polybot.runtime.pm_ws import BookCache, TradesCache
+from polybot.runtime.pm_ws import BookCache
 from polybot.runtime.models import PaperTrade5mBinary, TradeStatus, Direction
 from polybot.runtime.features import compute_row, needs_klines
 from polybot.lib.expr_eval_v1 import validate, evaluate
@@ -27,7 +26,7 @@ from polybot.strategies import ACTIVE
 
 FIX = json.loads((Path(__file__).parent / "fixtures" / "smoke_candle.json").read_text())
 # Rebuild fetch_klines's output: cols + ts index. Only bn_/basis_ exprs (e.g. R4) use it.
-_KLINE_COLS = ["ts", "open", "high", "low", "close", "volume", "quote_volume", "taker_buy_volume"]
+_KLINE_COLS = ["ts", "open", "high", "low", "close", "volume", "quote_volume", "taker_buy_volume", "n_trades"]
 KLINES = pd.DataFrame(FIX["klines"], columns=_KLINE_COLS).set_index("ts")
 
 
@@ -36,17 +35,14 @@ def scanner(tmp_path, monkeypatch):
     # no-fund-touch invariant: force paper-only BEFORE Scanner.__init__ → self.live=None,
     # so no LiveExecutor (would read PRIVATE_KEY/POLY_API_*) and no redeem loop.
     monkeypatch.setattr(scanner_mod, "LIVE_ENABLED", False)
-    sc = Scanner(str(tmp_path / "smoke.db"),
-                 book_cache=BookCache(), trades_cache=TradesCache())
+    sc = Scanner(str(tmp_path / "smoke.db"), book_cache=BookCache())
     assert sc.live is None, "LIVE_ENABLED=False must yield self.live=None (no wallet)"
     return sc
 
 
 def _compute(sc, expr):
     kl = KLINES if needs_klines(expr) else None  # mirror scanner: klines only when expr needs
-    return compute_row(expr, FIX["cs"],
-                       trades=FIX["trades"], up_token=FIX["up_token"],
-                       dn_token=FIX["down_token"], engine=sc.engine, klines=kl)
+    return compute_row(expr, FIX["cs"], engine=sc.engine, klines=kl)
 
 
 def test_active_exprs_validate():
@@ -74,14 +70,6 @@ def test_compute_and_evaluate_per_expr(scanner):
     for s in ACTIVE:
         res = evaluate(s.expr, _compute(scanner, s.expr))
         assert len(res) == 1 and res.dtype == bool
-
-
-def test_intra_feature_computed_from_trades(scanner):
-    # trades-based INTRA compute actually yields a finite value (not all-NaN).
-    # p_intra_180_up (EP: last BUY ≤ cs+180, cap-immune) survives trades→EP migration
-    # as a plain base col (no transform) → lands directly in df. (fat std_intra_* dropped.)
-    v = _compute(scanner, "p_intra_180_up<0.99").iloc[0]["p_intra_180_up"]
-    assert np.isfinite(v), f"INTRA compute from trades produced non-finite {v!r}"
 
 
 def test_insert_and_seed_roundtrip(scanner):
