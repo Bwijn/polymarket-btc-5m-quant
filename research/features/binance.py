@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from polybot.lib.compute import compute_bn_features
+from polybot.lib.compute.binance import compute_bn_features
 
 from ._common import DB, OUT_DIR, existing_cs, write_incremental
 
@@ -25,7 +25,7 @@ def build(incremental: bool = False) -> Path:
     events = pd.read_sql("SELECT cid, candle_start AS cs FROM events ORDER BY candle_start", con)
     klines = pd.read_sql("""
         SELECT open_ts_ms/1000 AS ts, open, high, low, close,
-               volume, quote_volume, taker_buy_volume
+               volume, quote_volume, taker_buy_volume, n_trades
         FROM binance_klines ORDER BY open_ts_ms
     """, con)
     con.close()
