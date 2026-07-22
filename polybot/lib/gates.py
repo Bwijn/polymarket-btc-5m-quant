@@ -143,32 +143,3 @@ PAPER_TO_LIVE_CAP_N = 800
 
 PAPER_TO_LIVE_CAP_WEEKS = 10
 # Hard wall-clock cap: 8-10 weeks → KILL regardless of n (life is short)
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# Self-test
-# ════════════════════════════════════════════════════════════════════════════
-if __name__ == "__main__":
-    # Sanity: implied chain
-    bt = BT_CROSS_BUCKET_NET_EV
-    paper_implied = bt - BT_TO_PAPER_DRIFT
-    live_gate = PAPER_TO_LIVE_NET_EV
-    assert paper_implied >= live_gate - 0.001, \
-        f"chain broken: bt {bt} − drift {BT_TO_PAPER_DRIFT} = {paper_implied} < live gate {live_gate}"
-    assert 0 < FACTOR_DEDUP_JACCARD_MAX < 1, "dedup Jaccard threshold must be in (0,1)"
-    assert NET_BASE_MIN >= 0, "net-base floor must be ≥ 0"
-    assert 0 < WF_SIGN_FRAC <= 1, "wf sign frac must be in (0,1]"
-    assert WF_MIN_WEEK_N > 0 and WF_MIN_WEEKS > 0, "wf week counts must be positive"
-    assert 0 < EP_BAND_LO < EP_BAND_HI < 1, "ep band must be 0 < LO < HI < 1"
-    assert WILSON_Z > 0, "wilson z must be > 0"
-
-    print("gates: OK")
-    print(f"  1-pred lens hurdles: nev≥{bt:.0%}, net_base>{NET_BASE_MIN:.0%} "
-          f"(wr Wilson-shrunk z={WILSON_Z}), wf sign≥{WF_SIGN_FRAC:.0%} "
-          f"over ≥{WF_MIN_WEEKS}wk (each n≥{WF_MIN_WEEK_N})")
-    print(f"  fit-for-size ep band: [{EP_BAND_LO}, {EP_BAND_HI}] (even-money; longshot/favorite deferred)")
-    print(f"  bt mining gate (cross-bucket V1 ∩ V2): nev > {bt:.1%}")
-    print(f"  bt → paper drift haircut             : −{BT_TO_PAPER_DRIFT:.1%}")
-    print(f"  → paper-implied minimum               : {paper_implied:.1%}")
-    print(f"  paper → live gate                     : nev > {live_gate:.1%} AND t > {PAPER_TO_LIVE_T_STAT}")
-    print(f"  paper KILL cap                        : n > {PAPER_TO_LIVE_CAP_N} OR weeks > {PAPER_TO_LIVE_CAP_WEEKS}")

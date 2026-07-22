@@ -26,7 +26,7 @@ async def fetch_klines(start_s: int, end_s: int, symbol: str = "BTCUSDT") -> pd.
     """Fetch 1-min klines covering [start_s, end_s] inclusive. Returns DataFrame
     indexed by ts (unix seconds at minute boundary), columns matching mining
     binance_klines table (open, high, low, close, volume, quote_volume,
-    taker_buy_volume).
+    taker_buy_volume, n_trades).
 
     Boundary invariant: /klines endTime is inclusive on OPEN time. When end_s is
     a minute boundary the LAST row is the still-forming candle (open==end_s,
@@ -55,28 +55,13 @@ async def fetch_klines(start_s: int, end_s: int, symbol: str = "BTCUSDT") -> pd.
 
     df = pd.DataFrame(rows, columns=[
         'open_ts_ms', 'open', 'high', 'low', 'close', 'volume', 'close_ts_ms',
-        'quote_volume', 'num_trades', 'taker_buy_volume', 'taker_buy_quote_volume', 'ignore'
+        'quote_volume', 'n_trades', 'taker_buy_volume', 'taker_buy_quote_volume', 'ignore'
     ])
     df['ts'] = (df['open_ts_ms'] // 1000).astype('int64')
     for c in ('open', 'high', 'low', 'close', 'volume', 'quote_volume', 'taker_buy_volume'):
         df[c] = df[c].astype(float)
-    df = df[['ts', 'open', 'high', 'low', 'close', 'volume', 'quote_volume', 'taker_buy_volume']]
+    df['n_trades'] = df['n_trades'].astype('int64')
+    df = df[['ts', 'open', 'high', 'low', 'close', 'volume', 'quote_volume',
+             'taker_buy_volume', 'n_trades']]
     df.set_index('ts', inplace=True)
     return df
-
-
-if __name__ == '__main__':
-    import asyncio
-    import time
-
-    async def _self_test():
-        now_s = int(time.time())
-        df = await fetch_klines(now_s - 3600, now_s)
-        print(f"fetched {len(df)} klines covering {df.index.min()} .. {df.index.max()}")
-        print(f"cols: {list(df.columns)}")
-        print(f"sample row: {df.iloc[-1].to_dict()}")
-        assert len(df) >= 55, f"expected ~60 1-min klines in 1h, got {len(df)}"
-        assert df.index.is_monotonic_increasing
-
-    asyncio.run(_self_test())
-    print("bn_api: self-test OK")

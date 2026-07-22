@@ -16,7 +16,7 @@ def compute_bn_features(klines: pd.DataFrame, cs: int) -> dict:
     """Binance kline-derived features at cs.
 
     klines: DataFrame indexed by ts (unix seconds at minute boundary), columns:
-            open, high, low, close, volume, quote_volume, taker_buy_volume.
+            open, high, low, close, volume, quote_volume, taker_buy_volume, n_trades.
             Must cover at least [cs - 3600, cs).
     """
     out = {}
@@ -29,6 +29,7 @@ def compute_bn_features(klines: pd.DataFrame, cs: int) -> dict:
             if w in (60, 300, 900):
                 out[f'bn_taker_buy_ratio_pre_{w}'] = np.nan
                 out[f'bn_cvd_pre_{w}'] = np.nan
+                out[f'bn_avg_trade_size_pre_{w}'] = np.nan
             if w == 60:
                 out['bn_vol_zscore_pre_60'] = np.nan
             if w in (300, 900):
@@ -39,6 +40,8 @@ def compute_bn_features(klines: pd.DataFrame, cs: int) -> dict:
             if w == 900:
                 out['bn_secs_since_low_900'] = np.nan
                 out['bn_secs_since_high_900'] = np.nan
+            if w == 3600:
+                out['bn_run_len'] = np.nan
             continue
 
         close_now   = seg['close'].iloc[-1]
@@ -54,6 +57,10 @@ def compute_bn_features(klines: pd.DataFrame, cs: int) -> dict:
             tb = seg['taker_buy_volume'].sum()
             out[f'bn_taker_buy_ratio_pre_{w}'] = tb / vol_sum if vol_sum > 0 else np.nan
             out[f'bn_cvd_pre_{w}'] = 2 * tb - vol_sum   # signed taker vol = buy − sell
+            # avg USD notional per trade (whale↔retail proxy); raw drifts w/ price+regime
+            # → lean on __zs/__rank transforms. NaN when no trades (illiquid minute run)
+            nt = seg['n_trades'].sum()
+            out[f'bn_avg_trade_size_pre_{w}'] = seg['quote_volume'].sum() / nt if nt > 0 else np.nan
 
         if w == 60:
             seg_long = klines.loc[(klines.index >= cs - 3600) & (klines.index < cs)]
@@ -80,5 +87,22 @@ def compute_bn_features(klines: pd.DataFrame, cs: int) -> dict:
             lows, highs = seg['low'], seg['high']
             out['bn_secs_since_low_900'] = float(cs - lows[lows == lows.min()].index.max())
             out['bn_secs_since_high_900'] = float(cs - highs[highs == highs.max()].index.max())
+
+        if w == 3600:
+            # signed run length: consecutive same-body-direction 1m bars ending at the
+            # last complete bar before cs. +N = N up-candles in a row, −N = N down.
+            # sign(close−open) per bar; doji (0) breaks the run. seq-structure ⟂ chg_pct
+            # (magnitude): small-body streak vs one big bar differ. capped ≤ len(seg)=60.
+            body = np.sign((seg['close'] - seg['open']).values)
+            last = body[-1]
+            if last == 0:
+                out['bn_run_len'] = 0.0
+            else:
+                rl = 0
+                for b in body[::-1]:
+                    if b != last:
+                        break
+                    rl += 1
+                out['bn_run_len'] = float(last * rl)
 
     return out

@@ -3,7 +3,7 @@
 Each TICK_S seconds:
   1. Trigger eval — for current + previous candle, for each ACTIVE strategy:
      If now ≥ cs + entry_offset_s and (expr, cs) not yet recorded,
-     compute features (trades_cache + Binance klines),
+     compute features (Binance klines),
      evaluate trigger expression. On hit, INSERT a paper_trade_5m_binary row
      with paper book snapshot only — bt track removed 2026-05-26 (derived
      on-demand via scratch/research/compute_drift.py + PM /trades).
@@ -31,7 +31,7 @@ from polybot.lib.expr_eval_v1 import evaluate
 from polybot.lib.friction import paper_friction_ratio
 from polybot.runtime.features import compute_row, needs_klines
 from polybot.runtime.pm_api import slug_for, fetch_event, parse_market
-from polybot.runtime.pm_ws import BookCache, TradesCache
+from polybot.runtime.pm_ws import BookCache
 from polybot.runtime.bn_api import fetch_klines
 
 log = logging.getLogger("polybot.scanner")
@@ -71,6 +71,8 @@ def _ensure_dashboard(eng) -> None:
         # linear mirror (zero new info + vanity), and the gate is ratio-based → drop paper usd.
         # nev50 = mean nev over last-50 fires: full-history AVG hides decay (early wins prop it
         # up); nev50 shows CURRENT edge in one row → the signal the "decay → demote" gate needs.
+        # pap_ep/ep_std/live_ep = entry-price (fill-prob proxy) diagnostics: realized ep vs the
+        # mining proxy; ep_std flags dispersion (fee is 1/ep-sensitive). read-only, zero query cost.
         # LIVE cols (real wallet, %-of-balance/Kelly → size varies) carry usd — the only figure
         # ratio can't reconstruct. drift = same-set paper−live (mining bakes a +0.015 defensive
         # constant; this measures the realized gap). AVG skips NULL → live cols null for paper-only.
@@ -80,6 +82,7 @@ def _ensure_dashboard(eng) -> None:
                 SELECT a.expr, a.direction, a.live, p.up_won, p.settled_at_s,
                        p.pnl_ratio_paper_net AS pr, p.pnl_ratio_live_net AS lr,
                        p.pnl_usd_live_net AS lu,
+                       p.entry_price_paper AS ep, p.entry_price_live AS eplive,
                        ROW_NUMBER() OVER (PARTITION BY a.expr ORDER BY p.settled_at_s DESC) AS rn
                 FROM paper_trade_5m_binary p
                 JOIN active_strategies a ON p.expr = a.expr
@@ -98,6 +101,10 @@ def _ensure_dashboard(eng) -> None:
                      sqrt((AVG(pr*pr) - AVG(pr)*AVG(pr))
                          * SUM(pr IS NOT NULL) / (SUM(pr IS NOT NULL)-1.0)), 2)
                    ELSE NULL END AS pap_t,
+                   ROUND(AVG(ep), 4) AS pap_ep,
+                   CASE WHEN AVG(ep*ep) - AVG(ep)*AVG(ep) > 0
+                        THEN ROUND(sqrt(AVG(ep*ep) - AVG(ep)*AVG(ep)), 4) ELSE 0 END AS ep_std,
+                   ROUND(AVG(eplive), 4) AS live_ep,
                    ROUND(AVG(CASE WHEN rn<=50 THEN pr END), 4) AS nev50,
                    SUM(lr IS NOT NULL) AS n_live,
                    ROUND(AVG(lr), 4) AS live_nev,
@@ -110,12 +117,10 @@ def _ensure_dashboard(eng) -> None:
 
 class Scanner:
     def __init__(self, db_path: str = DB_FILE,
-                 book_cache: BookCache | None = None,
-                 trades_cache: 'TradesCache | None' = None):
+                 book_cache: BookCache | None = None):
         self.engine = _engine(db_path)
         self.db_path = db_path
         self.book_cache = book_cache or BookCache()
-        self.trades_cache = trades_cache    # INTRA features need this; None → INTRA = NaN
         # LiveExecutor only when armed — None ⇒ pure paper, no key/network touched.
         self.live = LiveExecutor() if LIVE_ENABLED else None
         # _evaluated: (expr, cs) we've already eval'd (hit or miss).
@@ -145,7 +150,7 @@ class Scanner:
             log.warning(f"[{strat.label}] cs={cs} market unparseable")
             return
 
-        # Only Binance klines need fetching (bn_ exprs); INTRA features come from trades_cache.
+        # Only Binance klines need fetching (bn_ exprs).
         need_klines = needs_klines(strat.expr)
         klines = await fetch_klines(cs - 3600, cs) if need_klines else None
         if need_klines and (klines is None or klines.empty):
@@ -154,13 +159,7 @@ class Scanner:
 
         # engine=self.engine → compute_row 查/写 feature_history (transform 用).
         # 无 transform 的 expr 不触发任何 db op, engine arg 无副作用.
-        # trades=trades_cache[cid] → INTRA features (max/min/mean_intra, pmt_*) source.
-        # b3295eb migration: INTRA features 改用 trades-based, scanner 必须 pass trades.
-        trades = self.trades_cache.get(m['condition_id']) if self.trades_cache else []
-        df = compute_row(strat.expr, cs,
-                         trades=trades,
-                         up_token=m['up_token'], dn_token=m['down_token'],
-                         engine=self.engine, klines=klines)
+        df = compute_row(strat.expr, cs, engine=self.engine, klines=klines)
         hit = bool(evaluate(strat.expr, df).iloc[0])
         self._evaluated.add((strat.expr, cs))
         if not hit:

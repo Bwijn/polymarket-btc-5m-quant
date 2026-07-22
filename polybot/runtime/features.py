@@ -1,8 +1,7 @@
 """Paper-time feature materialization for trigger evaluation.
 
 Thin wrapper over `compute.py` (SSOT pure math). For each trigger eval:
-  1. Calls compute_pmtrades_features (EP, trades-based) + compute_bn_features
-     (BN, when expr touches bn_) → full base set.
+  1. Calls compute_bn_features (BN, when expr touches bn_) → base set.
   2. For expr cols that are transforms (`__zs24h` / `__zs7d` / `__rank24h`), queries
      feature_history (polybot.db rolling buffer) for past values and calls
      compute_zs / compute_rank.
@@ -10,16 +9,11 @@ Thin wrapper over `compute.py` (SSOT pure math). For each trigger eval:
   4. Returns 1-row DataFrame for evaluate() to consume.
 
 Public API:
-    compute_row(expr, cs, *, trades, up_token, dn_token,
-                engine=None, klines=None) -> pd.DataFrame
-        trades: list of (ts, side, price, size, asset, proxy_wallet) for cid
-                (INTRA features source; b3295eb migration: trades-based not mid-price)
-        up_token/dn_token: needed by compute_pmtrades_features for direction split
+    compute_row(expr, cs, *, engine=None, klines=None) -> pd.DataFrame
         engine: SQLAlchemy engine for polybot.db. Required if expr uses transforms.
         klines: pandas DataFrame for BN features (cs-3600 to cs Binance klines).
 
 Coverage:
-    EP (p_intra_X + staleness): compute_pmtrades_features (trades-based)
     BN (bn_taker, bn_vol_zscore, ...): compute_bn_features (klines-based)
     Transforms (__zs24h/__zs7d/__rank24h) over any base feature.
 """
@@ -27,8 +21,8 @@ from __future__ import annotations
 import pandas as pd
 from sqlmodel import Session, select
 
-from polybot.lib.compute import (compute_pmtrades_features, compute_bn_features,
-                         compute_zs, compute_rank, parse_transform_col)
+from polybot.lib.compute.binance import compute_bn_features
+from polybot.lib.compute.transforms import compute_zs, compute_rank, parse_transform_col
 from polybot.lib.expr_eval_v1 import validate
 
 # Resolve FeatureHistory across two import contexts:
@@ -57,14 +51,9 @@ def needs_klines(expr: str) -> bool:
 
 
 def compute_row(expr: str, cs: int, *,
-                trades=None, up_token=None, dn_token=None,
                 engine=None, klines=None) -> pd.DataFrame:
     """1-row DataFrame with columns = base_cols referenced by expr.
 
-    trades:    list of (ts, side, price, size, asset, proxy_wallet) for cid.
-               EP features (p_intra_X + staleness) require this.
-               Empty list → EP features = NaN (pmt_nan_record fallback).
-    up_token/dn_token: required if trades passed (compute_pmtrades_features needs).
     cs:        candle_start (unix seconds)
     engine:    SQLAlchemy engine for polybot.db. Required for transform atoms.
     klines:    pandas DataFrame for BN features ([cs-3600, cs] coverage).
@@ -82,10 +71,6 @@ def compute_row(expr: str, cs: int, *,
             raise NotImplementedError(
                 f"expr_eval atom transforms not supported; use materialized suffix instead.")
 
-    # INTRA features (b3295eb migration): trades-based.
-    pmt = compute_pmtrades_features(trades or [], cs, up_token, dn_token) \
-          if (up_token and dn_token) else {}
-
     # Decompose cols: plain base vs transform
     plain_cols = []
     transform_cols = []   # list of (full_col, base, spec)
@@ -99,8 +84,7 @@ def compute_row(expr: str, cs: int, *,
             transform_cols.append((c, base, spec))
             bases_to_record.add(base)
 
-    # If expr atoms touch bn_ (directly or as transform base), compute that family
-    # now and merge. Otherwise skip — trades-only path.
+    # If expr atoms touch bn_ (directly or as transform base), compute that family.
     all_atom_bases = set(plain_cols) | bases_to_record
     need_bn = any(b.startswith('bn_') for b in all_atom_bases)
 
@@ -112,7 +96,7 @@ def compute_row(expr: str, cs: int, *,
                 f"(scanner must fetch Binance klines for active strategies needing them).")
         bn = compute_bn_features(klines, cs)
 
-    all_features = {**pmt, **bn}
+    all_features = dict(bn)
 
     # Validate all bases exist in computed family set
     for c in plain_cols:

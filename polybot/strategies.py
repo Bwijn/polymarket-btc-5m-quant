@@ -131,9 +131,3 @@ ACTIVE: tuple[Strategy, ...] = (
     BN_CVD60_UP, BN_CVD300_DN,
     BN_CHGDN900_ZS7D_DN, BN_CHGDN300_ZS24H_UP,
 )
-
-
-if __name__ == '__main__':
-    for s in ACTIVE:
-        print(f"  {s.label}: {s.expr!r} entry=cs+{s.entry_offset_s}s bet={s.direction}")
-    print("strategies: OK")

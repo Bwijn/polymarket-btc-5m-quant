@@ -1,8 +1,6 @@
-"""WS book + trades cache for PM CLOB market channel.
+"""WS book cache for PM CLOB market channel.
 
-Two caches:
   - BookCache: latest best_bid/best_ask per asset_id (from price_change / book events)
-  - TradesCache: per-cid (market) rolling list of trades (from last_trade_price events)
 
 Auto-reconnects on close (PM idle-timeout, GFW SSL cuts, network blips, etc.).
 Re-subscribes when the active 5min candle rolls.
@@ -11,11 +9,6 @@ Why ws (not poll /book): paper trade's deliverable is *drift between backtest's
 prices-history-based entry vs. real orderbook ask*. Polling /book adds 200ms
 HTTP RTT — mistaking that latency for orderbook drift. ws gives 0-lag instant
 best_ask at the trigger moment.
-
-Why ws trades (not /trades API): PM /trades endpoint does NOT support
-startTime/endTime filter (verified 2026-05-26), so historical window query
-requires pagination + in-script filter. ws push delivers same trade records
-with sub-second latency, naturally maintains rolling window.
 """
 from __future__ import annotations
 import asyncio
@@ -82,57 +75,6 @@ class BookCache:
         return self._cache.get(asset_id)
 
 
-class TradesCache:
-    """Rolling per-cid trades list, populated from ws 'last_trade_price' events.
-
-    Trade tuple: (ts_seconds, side, price, size, asset_id, proxy_wallet=None).
-    proxy_wallet always None — ws event payload does not include it (only
-    PM /trades pull API does). Affects pmt_wallets / pmt_whale features only;
-    P-series strategies do not use them, so OK.
-
-    Source: PM ws 'last_trade_price' event_type (Market Channel docs).
-    Window: kept per cid, evicted when scanner unsubscribes that cid (on
-    candle roll), aligned with BookCache eviction policy.
-    """
-
-    def __init__(self):
-        self._trades: dict[str, list[tuple]] = {}   # cid → list of trade tuples
-
-    def record(self, event: dict) -> None:
-        cid = event.get('market')
-        asset_id = event.get('asset_id')
-        if not cid or not asset_id:
-            return
-        try:
-            ts = int(int(event['timestamp']) / 1000)   # PM ms → s
-            side = event['side']
-            price = float(event['price'])
-            size = float(event['size'])
-        except (KeyError, TypeError, ValueError):
-            return
-        trade = (ts, side, price, size, asset_id, None)
-        self._trades.setdefault(cid, []).append(trade)
-
-    def get(self, cid: str) -> list[tuple]:
-        """All cached trades for cid (compute_pmtrades_features filters by cs window itself)."""
-        return self._trades.get(cid, [])
-
-    def evict(self, cid: str) -> None:
-        """Drop all trades for cid (called on candle-roll unsubscribe)."""
-        self._trades.pop(cid, None)
-
-    def gc(self, max_age_s: int = 7200) -> None:
-        """Drop trades older than max_age_s seconds (time-based, decoupled from
-        subscribe lifecycle). 2h default covers 2 candles' PRE+INTRA window comfortably."""
-        cutoff = int(time.time()) - max_age_s
-        for cid in list(self._trades.keys()):
-            kept = [t for t in self._trades[cid] if t[0] >= cutoff]
-            if kept:
-                self._trades[cid] = kept
-            else:
-                del self._trades[cid]
-
-
 class WsBookManager:
     """ONE long-lived ws connection. Reconnect only on network error.
 
@@ -151,15 +93,13 @@ class WsBookManager:
     add/remove on live connection is supported zero-disconnect.
     """
 
-    def __init__(self, cache: BookCache, trades_cache: 'TradesCache | None' = None):
+    def __init__(self, cache: BookCache):
         self.cache = cache
-        self.trades_cache = trades_cache    # optional; if None, last_trade_price events skipped
         self._http = httpx.AsyncClient(timeout=8.0)
         # State for the current ws session. Cleared on disconnect.
         self._subbed_cs: set[int] = set()           # candle_starts currently subscribed
         self._cs_tokens: dict[int, tuple[str, str]] = {}  # cs → (up_token, dn_token)
         self._last_maintain_ts: int = 0             # throttle: don't HTTP-spam Gamma
-        self._last_trades_gc_ts: int = 0            # trades_cache.gc() throttle
 
     async def aclose(self):
         await self._http.aclose()
@@ -251,11 +191,6 @@ class WsBookManager:
                 self._last_maintain_ts = now
                 await self._maintain_subs(ws)
 
-            # Periodic trades_cache GC (every 5min, decoupled from subscribe)
-            if self.trades_cache is not None and now - self._last_trades_gc_ts >= 300:
-                self._last_trades_gc_ts = now
-                self.trades_cache.gc()
-
             try:
                 payload = json.loads(msg)
             except json.JSONDecodeError:
@@ -267,9 +202,7 @@ class WsBookManager:
                     self.cache.update_from_price_change(e)
                 elif et == 'book':
                     self.cache.update_from_book(e)
-                elif et == 'last_trade_price' and self.trades_cache is not None:
-                    self.trades_cache.record(e)
-                # ignore tick_size_change
+                # ignore last_trade_price + tick_size_change
 
     async def run_forever(self):
         log.info("ws book manager started (long-lived, updateSubscription on roll)")
@@ -298,29 +231,3 @@ class WsBookManager:
                 self._subbed_cs.clear()
                 self._cs_tokens.clear()
                 self._last_maintain_ts = 0
-
-
-# ---- self-test (live, 10s) --------------------------------------------------
-if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO,
-                        format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s")
-
-    async def _selftest():
-        cache = BookCache()
-        mgr = WsBookManager(cache)
-        task = asyncio.create_task(mgr.run_forever())
-        # let it run 10s, then dump cache
-        await asyncio.sleep(10)
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-        await mgr.aclose()
-        print("=" * 60)
-        print(f"BookCache after 10s, {len(cache._cache)} assets seen")
-        for aid, snap in cache._cache.items():
-            print(f"  {aid[:12]}.. best_bid={snap['best_bid']} best_ask={snap['best_ask']} "
-                  f"src={snap['source']} ts={snap['ts_ms']}")
-
-    asyncio.run(_selftest())

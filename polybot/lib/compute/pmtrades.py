@@ -7,9 +7,8 @@ cap-immune: the most recent print is what the 4000-cap keeps). No stale fallback
 window. All flow/microstructure generators removed 2026-06-17:
 window aggregates carry 4k-cap selection bias, and intra signals failed bt.
 
-SSOT: mining scratch/research/features/pmtrades.py delegates here.
-Scanner runtime features.py compute_row pulls raw trades via ws TradesCache, then
-calls here.
+SSOT: mining research/features/pmtrades.py + research/ingestion delegate here.
+Runtime no longer calls this (TradesCache removed 2026-07; no live EP-trigger factor).
 """
 from __future__ import annotations
 import numpy as np
