@@ -15,8 +15,7 @@ Windows are event-count (events ≈ 5min spacing, so 288 ≈ 24h).
 
   Different paradigm (batch vs per-event) — byte-equivalence not guaranteed.
   TRANSFORM_SPEC window/min_periods MUST match polybot.lib.compute.constants
-  TRANSFORM_SPEC (manually synced — both use 288/2016/50/200). Verify via
-  scratch/tools/verify_compute_ssot.py (differential test, Phase 4).
+  TRANSFORM_SPEC (manually synced — both use 288/2016/50/200).
 
   Future: if scanner needs batch transforms or vectorized polybot impl emerges,
   refactor to SSOT.

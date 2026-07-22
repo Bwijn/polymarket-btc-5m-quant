@@ -8,7 +8,7 @@ strategies.py = arming authority (constitution); factors.status = 其 mirror + b
 此 gate fail-fast 抓 drift: 加进 ACTIVE 但 status 没同步, 或 code 删了却留 paper/live 悬挂行.
 
 Exit 0 = mirror in sync. Exit 1 = drift (两向都打印).
-Recommended: deploy.sh hook (跟 verify_compute_ssot.py 并列).
+Recommended: deploy.sh hook.
 """
 from __future__ import annotations
 import sqlite3

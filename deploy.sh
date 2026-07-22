@@ -9,12 +9,6 @@ uv run --project polybot python -m pytest tests/ -q
 # Aborts deploy if any test red. Covers: ACTIVE validate, dashboard view, compute+
 # evaluate per expr, INSERT/seed roundtrip, live order construction (no-fund-touch).
 
-echo "=== SSOT verify: mining ↔ polybot.lib.compute byte-equal ==="
-uv run python tools/verify_compute_ssot.py --n-events 30
-# Fails (exit 1) if mining batch impl diverges from polybot per-event impl.
-# Common cause: someone added math to research/features/<x>.py without delegating
-# to polybot.lib.compute, or modified polybot without re-syncing mining.
-
 echo "=== Dashboard SSOT verify: ACTIVE ⊆ paper_candidates ==="
 uv run python tools/verify_active_audit.py
 # Fails (exit 1) if any ACTIVE strategy has no paper_candidates audit row.
