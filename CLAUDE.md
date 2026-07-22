@@ -2,6 +2,7 @@
 - **交互语言**：工具与模型交互强制使用 **English**；用户输出强制使用 **中文**。 (因为English是最精准的, 没有歧义的)
 - **Jargon 翻译 (术语翻译, high-frequency repetition 高频重复)**：任何英文术语/缩写**每次出现**都要带中文翻译，格式 `term (中文)`，例：`sunk cost (沉没成本)` / `ex-post rescue (事后救援)` / `OOS = out-of-sample (样本外)` / `FWE = family-wise error (族系误差率)`。**不做首次/后续区分**，哪怕同一回复内出现 5 次也要重复翻译 5 次。目的：让用户通过高频重复刺激形成英文肌肉记忆 (muscle memory)，不是省字数。只有用户在当前回复中主动使用过的术语可省略翻译。
 - **风格定义**：整体代码风格**始终定位**为，精简高效、毫无冗余。该要求同样适用于注释与文档，且对于这两者，严格遵循**非必要不形成**的核心原则。
+- **Import 风格强制 direct submodule import (直接子模块导入), 禁 re-export barrel (再导出桶文件 / `__init__.py` facade 门面)**: 一律 `from pkg.sub import name`——从符号**定义所在模块**直接导入, provenance (来源) 显式 + import-order (导入顺序) 无耦合。**禁**在 `__init__.py` 里 `from .sub import name` 做 re-export (再导出) 让 `from pkg import name` 生效 (= barrel/facade 反模式: 藏符号真实位置 + 埋导入顺序坑 + 同包两种进法不统一)。`__init__.py` 只放 package docstring, 零 re-export / 零逻辑。先例: `polybot/lib/compute/__init__.py` 从 barrel 清成裸 docstring, 全库统一 (2026-07)。
 - **Alignment pause protocol** 用户说 "align"/"暂停"/"on the same page" 时进入对齐模式：只回答问题，不执行任何操作(probe/scan/decompile)。等用户明确说 "go"/"继续"/"resume" 才恢复执行。原因：用户需要重建 mental model，LLM 执行太快会导致用户跟丢推理链。
 - **ADHD-friendly SSOT dashboard** 用户 ADHD, mental model 重建成本高. 任何"当前状态"必须可通过 db tables / views **1 行 SQL 查询**获得, 不要求用户翻找 / 拼凑 / 跨多个 dir 整合. 3 个落地原则:
   1. **3 流分置**: data → db tables, code/rules → `polybot/`, prose docs → `docs/`. 不混. 
@@ -19,7 +20,7 @@
   | `/opt/polybot/polybot.db` (VPS) | **prod runtime SSOT** | scanner.py 实时写入 paper / live trade | scanner.py on VPS |
   
   ❌ 禁止: 把 mining/analysis 表加到 polybot 实战 db, 或把 paper trade 表加到 pm_btc5m.db.
-  ❌ 禁止: 跨 db 互查 (e.g. polybot_live.db join 到 factor_decisions). 决策表查 pm_btc5m.db, paper 表查 polybot_live.db, 不互通.
+  ❌ 禁止: 跨 db 互查 (e.g. polybot_live.db join 到 factors). 决策表查 pm_btc5m.db, paper 表查 polybot_live.db, 不互通.
   ❌ 禁止: 全库 copy / backup pm_btc5m.db. 改某张表的 schema / 数据, **只 dump 目标表**: `sqlite3 db .dump <table> > t.sql` (小表瞬间, = 精确 rollback artifact 回滚物). 整库 copy 仅在迁移**整个** db 时才允许. 
   ✓ 推荐: `bash sync_paper_db.sh` 同步 VPS polybot.db → 本地 `db/polybot_live.db`. 不覆盖 pm_btc5m.db.
   ✓ 推荐: dev → prod 决策传递走**代码** (strategies.py 改 ACTIVE) + deploy.sh, **不**走 db 同步.
@@ -50,4 +51,4 @@
 - **Priority order** EV > MDD > Kelly > Sharpe。EV 正才玩，负即走。其他都是二阶精修。
 - **Gates SSOT** — 所有 bt / paper / live gate 数字定义在 `polybot/lib/gates.py` (含 rationale + 实测来源 + chain self-test). 文中提到的具体数字 (5%, 7%, t>1.65, n=800 ...) 都是当时 git 版本; 修改通过 git commit + audit message 跟踪。**不要在其它地方 hardcode 重复**, 全部 `from polybot.lib.gates import ...`.
 - **Factor admission — 只做「高 edge · 可验证 · 值得做」的 factor** capital 小 + PM crypto 7% taker fee (吃单费, 全平台最高档) → **无法复刻 Simons 式小 edge 复利**: 那需 edge 被证到铁律级 + 单笔成本≈0 + 千万级交易量, 三者皆无 (Simons 的 50.75% 能赚是因它被证到 100% 确定且成本≈0, 不是"edge 小也行"). 一个 factor 允许进 live 当且仅当三条全满足: ① **可验证** — 能在可行 n 内统计证明 (见下条 gate); ② **够大** — net EV (扣 fee + drift) 点估计 ≥ `PAPER_TO_LIVE_NET_EV` (gates.py); ③ **实测** — 证据来自 paper (真 OOS), 不是 bt. 小 edge 对我们结构性不可行 (fee 吃光 + 可行 n 内证不出).
-- **paper→live gate (kill-unless-proven, 举证责任在 factor)** 默认 = 不给 live; factor 必须主动证明 edge 才能上. "bt 好看 / paper 战绩好看 / 凭感觉" ≠ proven. 判据是**一条固定规则, 不是固定数字** — 2 个 dial 全 factor 统一 (不逐个调): 信心档 net EV 的 t (统计量) > `PAPER_TO_LIVE_T_STAT`; magnitude hurdle 点估计 ≥ `PAPER_TO_LIVE_NET_EV`. 每 ~50 单 checkpoint: GRADUATE = t 过 ∧ EV 过 → live; KILL = n 到 `PAPER_TO_LIVE_CAP_N` 仍未 graduate (edge 即便真也太小/太慢, 不值), 或挂钟过 `PAPER_TO_LIVE_CAP_WEEKS`, 或 CI 已明确转负. live 中 factor 持续受同一 gate, decay 跌破即降回 paper. H5 是反面教材: legacy factor, paper +3% net / t=0.44 (远不达 gate), 当初靠"paper 好看" 凭感觉直接 live, 违反此条 → killed (见 factor_decisions).
+- **paper→live gate (kill-unless-proven, 举证责任在 factor)** 默认 = 不给 live; factor 必须主动证明 edge 才能上. "bt 好看 / paper 战绩好看 / 凭感觉" ≠ proven. 判据是**一条固定规则, 不是固定数字** — 2 个 dial 全 factor 统一 (不逐个调): 信心档 net EV 的 t (统计量) > `PAPER_TO_LIVE_T_STAT`; magnitude hurdle 点估计 ≥ `PAPER_TO_LIVE_NET_EV`. 每 ~50 单 checkpoint: GRADUATE = t 过 ∧ EV 过 → live; KILL = n 到 `PAPER_TO_LIVE_CAP_N` 仍未 graduate (edge 即便真也太小/太慢, 不值), 或挂钟过 `PAPER_TO_LIVE_CAP_WEEKS`, 或 CI 已明确转负. live 中 factor 持续受同一 gate, decay 跌破即降回 paper. H5 是反面教材: legacy factor, paper +3% net / t=0.44 (远不达 gate), 当初靠"paper 好看" 凭感觉直接 live, 违反此条 → killed (见 factors 表 status='killed' + note/diag).
