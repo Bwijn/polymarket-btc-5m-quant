@@ -10,19 +10,30 @@ cap can't catch. Two layers mocked:
 Expected: all pass; no order ever submitted. no-fund-touch invariant enforced.
 """
 import asyncio
+import pathlib
+import sqlite3
 
 import pytest
 
+from conftest import ROSTER_SQL
 import polybot.runtime.scanner as scanner_mod
 from polybot.runtime.scanner import Scanner
 from polybot.runtime.pm_ws import BookCache
 from polybot.runtime.models import PaperTrade5mBinary, TradeStatus, Direction
 from polybot.runtime.live_exec import LiveExecutor, LiveFill
-from polybot.runtime.config import BANKROLL_FRAC, LIVE_MIN_USD
-from polybot.strategies import R4
+from polybot.runtime.config import LIVE_MIN_USD
+from polybot.lib.roster import Strategy
 
 from py_clob_client_v2 import OrderType
 from py_clob_client_v2.order_builder.constants import BUY
+
+# Execution-path fixture, pinned rather than loaded from factor_roster: _place_live's
+# contract (side / size / price_limit) must stay tested regardless of which factors are
+# currently armed — R4 itself was demoted live→paper 2026-08-01.
+R4 = Strategy(
+    label="R4",
+    expr="bn_taker_buy_ratio_pre_300>0.7554713487625122 & bn_vol_zscore_pre_60__zs24h>0.3679429590702057",
+    entry_offset_s=0, direction="DOWN", live=True, slippage_cap=0.10, bankroll_frac=0.05)
 
 UP_TOK, DN_TOK = "up_token_xxx", "down_token_yyy"
 M = {"up_token": UP_TOK, "down_token": DN_TOK}
@@ -43,7 +54,10 @@ class FakeLive:
 
 def _scanner_with_fake_live(tmp_path, monkeypatch, fake):
     monkeypatch.setattr(scanner_mod, "LIVE_ENABLED", False)   # no real LiveExecutor
-    sc = Scanner(str(tmp_path / "live.db"), book_cache=BookCache())
+    db = tmp_path / "live.db"
+    with sqlite3.connect(db) as c:                            # factor_roster before init
+        c.executescript(ROSTER_SQL)
+    sc = Scanner(str(db), book_cache=BookCache())
     assert sc.live is None
     sc.live = fake                                            # inject mock
     return sc
@@ -76,7 +90,7 @@ def test_place_live_buys_correct_side_size_price(tmp_path, monkeypatch):
     assert len(fake.calls) == 1, "exactly one order placed"
     token, size, price_limit = fake.calls[0]
     assert token == DN_TOK, "R4 is DOWN → must buy the DOWN token"
-    assert size == round(100.0 * BANKROLL_FRAC["R4"], 2)        # 5% of bankroll
+    assert size == round(100.0 * R4.bankroll_frac, 2)        # 5% of bankroll
     assert price_limit == min(0.99, round(ep + R4.slippage_cap, 2))
     # _record_live persisted the fill onto the row
     from sqlmodel import Session
@@ -88,7 +102,7 @@ def test_place_live_buys_correct_side_size_price(tmp_path, monkeypatch):
 
 def test_place_live_skips_below_min_notional(tmp_path, monkeypatch):
     # balance so small that size < LIVE_MIN_USD → must NOT place an order
-    fake = FakeLive(balance=LIVE_MIN_USD / BANKROLL_FRAC["R4"] / 2,  # → size = half the floor
+    fake = FakeLive(balance=LIVE_MIN_USD / R4.bankroll_frac / 2,  # → size = half the floor
                     fill=LiveFill(success=True, status="matched"))
     sc = _scanner_with_fake_live(tmp_path, monkeypatch, fake)
     rid = _seed_row(sc)

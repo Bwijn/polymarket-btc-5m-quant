@@ -16,14 +16,18 @@
   | DB 路径 | 角色 | 内容 | 谁写 |
   |---|---|---|---|
   | `/home/polymarket_work/db/pm_btc5m.db` | **dev / research workspace** | events + binance_* (raw ingest), factors (状态注册表), **ep_panel** (EP source-of-record: cid PK + 40 p_intra 列 = dropped trades 表的 slim 继任者; ETL = /trades→compute in-flight→ep_panel→投影进 features.parquet, raw 不存), _legacy_*/_ingest_v3_*. (**trades 表 2026-06-17 dropped**, db 79G→286MB) | mining 脚本 + 分析脚本, 本地 only |
-  | `/home/polymarket_work/db/polybot_live.db` | **VPS prod sync 本地副本 (read-only)** | paper_trade_5m_binary, feature_history (镜像) | `bash sync_paper_db.sh` rsync 自 VPS |
-  | `/opt/polybot/polybot.db` (VPS) | **prod runtime SSOT** | scanner.py 实时写入 paper / live trade | scanner.py on VPS |
+  | `/home/polymarket_work/db/polybot_live.db` | **VPS prod sync 本地副本 (read-only)** | factor_roster, factor_log, paper_trade_5m_binary, feature_history (镜像) | `bash sync_paper_db.sh` rsync 自 VPS |
+  | `/opt/polybot/polybot.db` (VPS) | **prod runtime SSOT — 含 roster** | **factor_roster (arming 权威) + factor_log (rationale)**, scanner.py 实时写入 paper / live trade | scanner.py on VPS + 人手改 roster |
   
   ❌ 禁止: 把 mining/analysis 表加到 polybot 实战 db, 或把 paper trade 表加到 pm_btc5m.db.
-  ❌ 禁止: 跨 db 互查 (e.g. polybot_live.db join 到 factors). 决策表查 pm_btc5m.db, paper 表查 polybot_live.db, 不互通.
   ❌ 禁止: 全库 copy / backup pm_btc5m.db. 改某张表的 schema / 数据, **只 dump 目标表**: `sqlite3 db .dump <table> > t.sql` (小表瞬间, = 精确 rollback artifact 回滚物). 整库 copy 仅在迁移**整个** db 时才允许. 
   ✓ 推荐: `bash sync_paper_db.sh` 同步 VPS polybot.db → 本地 `db/polybot_live.db`. 不覆盖 pm_btc5m.db.
-  ✓ 推荐: dev → prod 决策传递走**代码** (strategies.py 改 ACTIVE) + deploy.sh, **不**走 db 同步.
+- **Roster = data** — arming 权威 = VPS `/opt/polybot/polybot.db` 的 `factor_roster`. 改 roster **直接改 prod db**, 不走 deploy / 不走 dump / 无 git 历史 (明知选的):
+  ```
+  ssh vps "sqlite3 /opt/polybot/polybot.db \"UPDATE factor_roster SET status='live' WHERE label='R4'\""
+  ssh vps "systemctl restart polybot"
+  ```
+  research 侧读 roster 走 `db/polybot_live.db`, 先 `bash sync_paper_db.sh` 免得对着过期 roster 跑 dedup.
 - **API docs workflow (强制顺序, 不可跳步)**:
   1. **llms.txt 是 master index (主目录)**: https://docs.polymarket.com/llms.txt 列出**所有** endpoint docs + operational docs (rate-limits, changelog, errors, schemas, host 列表). 任何 API 决策**第一步 fetch llms.txt**, 在里面 grep 关键词 (rate / batch / fidelity / trades / book ...), 才 follow 具体页 link. **不要凭印象猜 URL 路径**, 也不要把 llms.txt 当普通页平等对待 — 它是入口, 其它都是从它索引出去的子页.
   1a. **Docs fetch 用 `curl` + `Read`, 不用 `WebFetch`**: WebFetch 不是直接给我 raw 文本, 它把 raw 喂给一个**小模型 (sub-model) 按我的 prompt 总结**, 我看到的是二手转述, 信息**有损 (lossy)** 且可能 hallucinate (幻觉). docs 是 SSOT (single source of truth), 必须 raw text. 用 `curl -s URL > /tmp/docs.md && cat /tmp/docs.md` 或 Bash → 自己 grep / Read. WebFetch 适合大型网页快速摘要, 不适合 docs / schema / config 这种**字面精确度 (literal precision) 重要**的内容.

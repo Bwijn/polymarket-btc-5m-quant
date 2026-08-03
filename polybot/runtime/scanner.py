@@ -1,7 +1,8 @@
 """Paper-trade scanner for binary 5m BTC up/down markets.
 
 Each TICK_S seconds:
-  1. Trigger eval — for current + previous candle, for each ACTIVE strategy:
+  1. Trigger eval — for current + previous candle, for each armed factor
+     (factor_roster status IN paper|live, loaded via polybot.lib.roster):
      If now ≥ cs + entry_offset_s and (expr, cs) not yet recorded,
      compute features (Binance klines),
      evaluate trigger expression. On hit, INSERT a paper_trade_5m_binary row
@@ -22,11 +23,11 @@ from sqlmodel import Session, select, SQLModel, create_engine
 
 from polybot.runtime.config import (DB_FILE, SETTLE_LAG_S,
                             SCHEDULE_REFRESH_S, SETTLE_POLL_S,
-                            LIVE_ENABLED, BANKROLL_FRAC, LIVE_MIN_USD)
+                            LIVE_ENABLED, LIVE_MIN_USD)
 from polybot.runtime.models import PaperTrade5mBinary, TradeStatus, Direction
 from polybot.runtime.live_exec import LiveExecutor, LiveFill
 from polybot.runtime.redeem import redeem_loop
-from polybot.strategies import ACTIVE, Strategy
+from polybot.lib.roster import load_roster, Strategy
 from polybot.lib.expr_eval_v1 import evaluate
 from polybot.lib.friction import paper_friction_ratio
 from polybot.runtime.features import compute_row, needs_klines
@@ -47,25 +48,17 @@ def _engine(db_path: str):
 
 
 def _ensure_dashboard(eng) -> None:
-    """Materialize ACTIVE → active_strategies table + paper_active_agg view.
+    """(Re)create the paper_active_agg view over factor_roster ⋈ paper_trade_5m_binary.
 
-    Why: paper_trade_5m_binary lives in this db (polybot.db); ACTIVE lives in
-    strategies.py (code); factors registry lives in pm_btc5m.db (cross-db join
-    forbidden, CLAUDE.md). So mirror ACTIVE into a small table here on every
-    startup → the view auto-filters aggregation to current factors. Killed/old
-    factors drop out automatically (not in ACTIVE → not in table → not in view).
-    Deploy + restart refreshes the mirror; 0 manual drift.
+    Roster and paper rows now live in the same db, so the view joins factor_roster
+    directly — the old active_strategies mirror table existed only to bridge a
+    code-resident ACTIVE into SQL, and is dropped here. Arming/disarming a factor is
+    a status UPDATE; the view follows with no restart and no manual drift.
     Aggregate everything via:  SELECT * FROM paper_active_agg;
     """
     from sqlalchemy import text
     with eng.begin() as c:
-        c.execute(text("CREATE TABLE IF NOT EXISTS active_strategies ("
-                       "expr TEXT PRIMARY KEY, direction TEXT, entry_offset_s INTEGER, live INTEGER)"))
-        c.execute(text("DELETE FROM active_strategies"))
-        for s in ACTIVE:
-            c.execute(text("INSERT INTO active_strategies (expr,direction,entry_offset_s,live) "
-                           "VALUES (:e,:d,:o,:l)"),
-                      {"e": s.expr, "d": s.direction, "o": s.entry_offset_s, "l": int(s.live)})
+        c.execute(text("DROP TABLE IF EXISTS active_strategies"))   # superseded by factor_roster
         # n_fired = signal fired & resolved; n_pap = of those, fillable book (ratio NOT NULL).
         # PAPER cols are ratio-only (pap_nev/pap_t): paper size fixed 1.7 → usd ≡ 1.7×ratio =
         # linear mirror (zero new info + vanity), and the gate is ratio-based → drop paper usd.
@@ -79,15 +72,16 @@ def _ensure_dashboard(eng) -> None:
         c.execute(text("DROP VIEW IF EXISTS paper_active_agg"))
         c.execute(text("""CREATE VIEW paper_active_agg AS
             WITH r AS (
-                SELECT a.expr, a.direction, a.live, p.up_won, p.settled_at_s,
+                SELECT a.label, a.expr, a.direction, (a.status='live') AS live,
+                       p.up_won, p.settled_at_s,
                        p.pnl_ratio_paper_net AS pr, p.pnl_ratio_live_net AS lr,
                        p.pnl_usd_live_net AS lu,
                        p.entry_price_paper AS ep, p.entry_price_live AS eplive,
                        ROW_NUMBER() OVER (PARTITION BY a.expr ORDER BY p.settled_at_s DESC) AS rn
                 FROM paper_trade_5m_binary p
-                JOIN active_strategies a ON p.expr = a.expr
-                WHERE p.status='settled')
-            SELECT expr, direction, live,
+                JOIN factor_roster a ON p.expr = a.expr
+                WHERE p.status='settled' AND a.status IN ('paper','live'))
+            SELECT label, expr, direction, live,
                    COUNT(*) AS n_fired,
                    SUM(pr IS NOT NULL) AS n_pap,
                    ROUND(1.0*SUM(CASE WHEN pr IS NOT NULL
@@ -112,7 +106,7 @@ def _ensure_dashboard(eng) -> None:
                    ROUND(AVG(pr - lr), 4) AS drift,
                    MAX(settled_at_s) AS last_settle_s
             FROM r
-            GROUP BY expr, direction, live"""))
+            GROUP BY label, expr, direction, live"""))
 
 
 class Scanner:
@@ -120,6 +114,10 @@ class Scanner:
                  book_cache: BookCache | None = None):
         self.engine = _engine(db_path)
         self.db_path = db_path
+        # Roster is data (factor_roster in this same db), loaded once at startup — a
+        # mid-run status flip must not silently change what's armed. Every row is
+        # expr-validated by load_roster; a bad row raises here, before any order.
+        self.roster = load_roster(db_path)
         self.book_cache = book_cache or BookCache()
         # LiveExecutor only when armed — None ⇒ pure paper, no key/network touched.
         self.live = LiveExecutor() if LIVE_ENABLED else None
@@ -214,14 +212,12 @@ class Scanner:
     async def _place_live(self, row_id: int, strat: Strategy, m: dict,
                           entry_price_paper: float | None) -> None:
         """Place the real order for a live-strategy HIT (architecture A: same
-        row as the paper trade). size = wallet_usdc × BANKROLL_FRAC[label]."""
+        row as the paper trade). size = wallet_usdc × strat.bankroll_frac —
+        non-null for any live row, enforced at load (roster.Strategy.__post_init__)."""
         if entry_price_paper is None:
             log.warning(f"[{strat.label}] #{row_id} no book snapshot — skip live")
             return
-        frac = BANKROLL_FRAC.get(strat.label)
-        if frac is None:
-            log.error(f"[{strat.label}] #{row_id} live=True but no BANKROLL_FRAC — skip")
-            return
+        frac = strat.bankroll_frac
         token = m['up_token'] if strat.direction == 'UP' else m['down_token']
         try:
             balance = await asyncio.to_thread(self.live.wallet_usdc)
@@ -340,13 +336,13 @@ class Scanner:
 
     async def schedule_loop(self) -> None:
         """Periodically register schedule_one tasks for current + next candle."""
-        log.info(f"schedule loop: strategies={[s.label for s in ACTIVE]}")
+        log.info(f"schedule loop: strategies={[s.label for s in self.roster]}")
         while True:
             try:
                 now = int(time.time())
                 cs_now  = (now // CANDLE_S) * CANDLE_S
                 cs_prev = cs_now - CANDLE_S
-                for strat in ACTIVE:
+                for strat in self.roster:
                     for cs in (cs_prev, cs_now, cs_now + CANDLE_S):
                         key = (strat.expr, cs)
                         if key in self._scheduled or key in self._evaluated:

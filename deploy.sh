@@ -6,13 +6,11 @@ cd /home/polymarket_work
 
 echo "=== pytest: unit + integration (scanner smoke + live-dry contract) ==="
 uv run --project polybot python -m pytest tests/ -q
-# Aborts deploy if any test red. Covers: ACTIVE validate, dashboard view, compute+
+# Aborts deploy if any test red. Covers: roster load+validate, dashboard view, compute+
 # evaluate per expr, INSERT/seed roundtrip, live order construction (no-fund-touch).
-
-echo "=== Dashboard SSOT verify: ACTIVE ⊆ paper_candidates ==="
-uv run python tools/verify_active_audit.py
-# Fails (exit 1) if any ACTIVE strategy has no paper_candidates audit row.
-# Common cause: deploying a strategy without going through mining cycle INSERT.
+# NOTE: tests pin their own factor_roster (tests/conftest.py) — the live roster is data
+# in prod polybot.db, edited there directly, so deploy cannot validate it. A bad expr
+# fails loud at service start instead (load_roster raises before any order is placed).
 
 echo "=== Regen BASE_COLS from features.parquet (SSOT codegen) ==="
 uv run python tools/gen_base_cols.py

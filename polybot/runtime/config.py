@@ -40,12 +40,12 @@ CHAIN_ID     = 137                                          # Polygon
 SIG_TYPE     = 1                                            # POLY_PROXY
 FUNDER       = "0x606970B1b66993A8E36C6CD41c1823317152f7ae" # proxy wallet (data-api verified)
 
-# Per-trade size = wallet_usdc × BANKROLL_FRAC[label]. FIXED-FRACTION of bankroll —
+LIVE_MIN_USD      = 1.0          # PM min order notional; skip live if size below
+# Per-trade size = wallet_usdc × factor_roster.bankroll_frac. FIXED-FRACTION of bankroll —
 # NOT Kelly: ignores edge/winrate, flat % per wager. (R4 full-Kelly≈26%; 5%≈0.2×,
 # conservative for a marginal-CI first-live trial. Fractional-Kelly = future upgrade
 # once real-money OOS tightens the edge estimate.) Fresh balance query per HIT →
 # size auto-deflates as concurrent positions consume USDC.
-BANKROLL_FRAC     = {"R4": 0.05}      # killed factors removed; arm via Strategy.live + deploy
-LIVE_MIN_USD      = 1.0          # PM min order notional; skip live if size below
-# Per-factor BUY slippage cap moved onto Strategy.slippage_cap (strategies.py) —
-# a factor's execution knobs belong with the factor, not a label-keyed config dict.
+# bankroll_frac + slippage_cap both live on the factor row, not in a label-keyed dict here:
+# a factor's execution knobs belong with the factor. (MVP-era BANKROLL_FRAC dict dropped
+# 2026-08-03 with the code→data roster move.)
