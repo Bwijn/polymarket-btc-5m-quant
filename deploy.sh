@@ -1,5 +1,11 @@
 #!/bin/bash
 # Deploy polybot code to VPS. Never touches polybot.db or .venv.
+# --delete makes /opt/polybot/ mirror polybot/ — without it a file deleted locally
+# lives on prod forever (rsync can't tell "deleted" from "never existed"; unlike git,
+# it copies what's present rather than applying a manifest). Found 4 such zombies in
+# lib/ dating to 9566bd0/1cde943, two of them inside the live compute/ package where a
+# stale import would work on prod and fail locally. --exclude'd paths stay protected
+# from deletion (only --delete-excluded would touch them — never add that).
 set -e
 
 cd /home/polymarket_work
@@ -16,7 +22,7 @@ echo "=== Regen BASE_COLS from features.parquet (SSOT codegen) ==="
 uv run python tools/gen_base_cols.py
 
 echo "=== Deploying to VPS ==="
-rsync -avz \
+rsync -avz --delete \
   --exclude='polybot.db' \
   --exclude='.venv' \
   --exclude='polybot.log' \
