@@ -15,7 +15,7 @@
 - **DB 职责隔离 (本地全 `/home/polymarket_work/db/`, 各司其职, 永不混)**:
   | DB 路径 | 角色 | 内容 | 谁写 |
   |---|---|---|---|
-  | `/home/polymarket_work/db/pm_btc5m.db` | **dev / research workspace** | events + binance_* (raw ingest), factors (状态注册表), **ep_panel** (EP source-of-record: cid PK + 40 p_intra 列 = dropped trades 表的 slim 继任者; ETL = /trades→compute in-flight→ep_panel→投影进 features.parquet, raw 不存), _legacy_*/_ingest_v3_*. (**trades 表 2026-06-17 dropped**, db 79G→286MB) | mining 脚本 + 分析脚本, 本地 only |
+  | `/home/polymarket_work/db/pm_btc5m.db` | **只放 mining 的 bt 数据** — 无状态/无注册表 | events + binance_* (raw ingest), **ep_panel** (EP source-of-record: cid PK + 40 p_intra 列 = dropped trades 表的 slim 继任者; ETL = /trades→compute in-flight→ep_panel→投影进 features.parquet, raw 不存), _ingest_v3_*. (**trades 表 2026-06-17 dropped**, db 79G→286MB; **factors/_legacy_* 2026-08-03 dropped** → roster 归 polybot.db) | mining 脚本 + 分析脚本, 本地 only |
   | `/home/polymarket_work/db/polybot_live.db` | **VPS prod sync 本地副本 (read-only)** | factor_roster, factor_log, paper_trade_5m_binary, feature_history (镜像) | `bash sync_paper_db.sh` rsync 自 VPS |
   | `/opt/polybot/polybot.db` (VPS) | **prod runtime SSOT — 含 roster** | **factor_roster (arming 权威) + factor_log (rationale)**, scanner.py 实时写入 paper / live trade | scanner.py on VPS + 人手改 roster |
   

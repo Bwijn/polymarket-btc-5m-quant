@@ -18,8 +18,13 @@ __pycache__/
 .env
 .env.*
 
-# claude per-user local settings (memory/rules are committed)
-.claude/settings.local.json
+# agent/editor config dirs = local toolchain, never published
+.claude/
+.codex/
+.cursor/
+.gemini/
+.aider*
+AGENTS.md
 
 # editor / OS
 .vscode/

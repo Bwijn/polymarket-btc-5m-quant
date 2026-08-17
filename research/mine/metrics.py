@@ -23,11 +23,14 @@ Metric 注册表 (= 列 SSOT; 每 metric 的 coverage 分母不同, 手动遴选
   valid_fraction    n_hit / n_raw                                 n_raw  (全触发)
   d = BT_TO_PAPER_DRIFT (ep-space drift); fee = backtest_friction_ratio (= PM taker on ep+d).
 
-Dedup 测量 (pairwise, 不入 scorecard 列; 两个正交 lens, NS1 ⑤ 别混):
-  jaccard           |A∩B|/|A∪B|  (bool fire-masks)              同一 hypothesis? (FWE)
+Dedup 测量 (pairwise, 不入 scorecard 列; 三个正交 lens, NS1 ⑤ 别混):
+  jaccard           |A∩B|/|A∪B|  对称                           同一 hypothesis? (FWE)
+  containment       |A∩B|/|A|    有向 (= P(B fires | A fires))  A 有增量下注? (paper slot)
   stream_corr       Pearson(ret_a, ret_b), drop_k robust        收益共动? (Kelly/overbet)
   Jaccard 硬 gate = FACTOR_DEDUP_JACCARD_MAX (gates.py); stream_corr = 参考线, 非 gate
   (full-stream 有 1/ep 凸性脆弱 → 稳健版 = drop_k 剔 top 协方差贡献点, cheap-ep mirage 会塌).
+  严格子集 A⊂B 只有 containment 看得见 (对称两者被 |B| 稀释 → 都误判独立): 实测
+  cvd_chgup_300>96.89 ⊂ cvd300_dn = containment 1.000 而 jaccard 0.506 / corr 0.709.
 """
 from __future__ import annotations
 import sys
@@ -112,6 +115,15 @@ def jaccard(a, b):
     a, b = np.asarray(a, bool), np.asarray(b, bool)
     u = int((a | b).sum())
     return int((a & b).sum()) / u if u else 0.0
+
+
+def containment(a, b):
+    """有向覆盖 |A∩B|/|A|: A 的触发中 B 已覆盖的比例 (= P(B|A)). A⊂B ⇒ 1.0 = A 零增量下注.
+    非对称是要点 — jaccard/stream_corr 皆对称, 分母含 B 独有部分, 严格子集会被稀释成"独立".
+    空 A→0."""
+    a, b = np.asarray(a, bool), np.asarray(b, bool)
+    n = int(a.sum())
+    return int((a & b).sum()) / n if n else 0.0
 
 
 def stream_corr(a, b, drop_k=0):
