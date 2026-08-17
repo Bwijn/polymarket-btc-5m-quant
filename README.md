@@ -1,10 +1,9 @@
+**中文** · [English](README.en.md)
+
 # polymarket-btc-5m-quant
 
 Polymarket BTC 5 分钟二元市场的完整量化系统 —— 因子挖掘、特征工程、paper 验证、实盘执行。
 **真实跑在生产环境上,用真金白银试错过。现已全部公开,包括数据和因子。**
-
-An end-to-end quant stack for Polymarket's BTC 5-minute binary markets. Production-deployed,
-traded with real money, now fully open-sourced — code, data, and factors included.
 
 ---
 
