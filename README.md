@@ -8,18 +8,35 @@ traded with real money, now fully open-sourced — code, data, and factors inclu
 
 ---
 
-## 这不是 vibe coding 出来的东西
+## 经过长期生产洗礼,已经成熟,可以直接扩展
 
-半年时间,**每一处代码都经过人工逐行 review**,不是让模型生成完就丢上去跑。
+半年时间,**每一处代码都经过人工逐行 review**,不是让模型生成完就丢上去跑的东西。
 
-它真实进过生产:
+**它连续在生产环境跑了 4 个多月**(2026-04-08 → 2026-08-16),不是跑通一次就截图的 demo:
 
-- systemd 常驻在 VPS 上,websocket 订阅盘口,自动下单、结算、redeem (赎回)
+- systemd 常驻 VPS,websocket 订阅盘口,自动下单、结算、redeem (赎回),断线重连、
+  幂等去重、崩溃恢复都在真实故障里磨过
 - **615 笔真金白银的成交**(早期 copy-trade 298 笔净盈利,5m binary 实盘 317 笔)
-- 3,560 笔样本外 paper 单,横跨 3.5 个月
-- 42,224 个市场的完整盘中价格轨迹,292 个工程特征
+- 3,560 笔样本外 paper 单,横跨 3.5 个月不间断
+- 42,224 个市场的完整盘中价格轨迹,15 个因子族、292 个工程特征
 
 每个数字都能在公开的数据库里用一行 SQL 查出来。
+
+### 为什么它容易接手和扩展
+
+**4,974 行 Python,48 个文件** —— 小到一个人能在几天内完整读懂,不是那种没人敢动的巨兽。
+而且几个关键决定让扩展不需要重构:
+
+| 设计 | 意味着 |
+|---|---|
+| **因子是数据,不是代码**([`expr_eval_v1.py`](polybot/lib/expr_eval_v1.py) + `factor_roster` 表) | 加一个因子 = 插一行 SQL。不改程序、不重新部署、不重启 |
+| **研究与实盘共用 [`lib/compute/`](polybot/lib/compute/)** | 回测和实盘不可能算出不同的特征 —— 量化系统最常见的死法在这里被结构性堵死 |
+| **阈值全部 SSOT 在 [`gates.py`](polybot/lib/gates.py)** | 改风控只动一个文件,每个数字都带实测来源和 rationale |
+| **特征流水线按数据源分模块**([`research/features/`](research/features/)) | 接新数据源只需加一个模块,不碰已有的 292 个特征 |
+| **`migrations/` + 录制 response 的 smoke test** | schema 能演进,改动有回归保护 |
+
+换个场子、换个标的、换套手续费结构,要动的主要是 ingest 和 gates 的数字 —— **骨架是通用的
+二元预测市场量化框架**,不是只能跑 Polymarket BTC 5 分钟这一件事。
 
 ---
 
@@ -157,8 +174,15 @@ tests/                含一个基于真实录制 response 的 smoke test
 **`ep_panel` 拿不到第二次** —— 它是从 PM `/trades` 的回溯窗口里算出来的,那个窗口已经关了。
 这 42,224 个市场的盘中价格轨迹,今天用 API 重建不出来。
 
-<!-- TODO: 数据下载链接 -->
-**下载:** _(待补)_
+**下载:** 打包在 [`release/`](release/) 目录里(Git LFS),合计 200MB。
+
+```bash
+git lfs install
+git clone https://github.com/Bwijn/polymarket-btc-5m-quant.git
+cd polymarket-btc-5m-quant/release
+zstd -d pm_btc5m.db.zst polybot_live.db.zst roster.db.zst
+tar xf research_data.tar
+```
 
 ## 完整构建记录
 
@@ -167,8 +191,13 @@ tests/                含一个基于真实录制 response 的 smoke test
 
 ## 交流
 
-<!-- TODO: TG group 链接 -->
-Telegram: _(待补)_
+因子、数据、踩坑,以及接手验证的进展,都在群里聊:
+
+**Telegram: [@APPSMATRIXCHAT](https://t.me/APPSMATRIXCHAT)**
+
+<img src="assets/tg_group.png" alt="Telegram @APPSMATRIXCHAT" width="220">
+
+前面那几个净 EV 为正、样本还薄的因子 —— 谁跑出结果了,欢迎回来说一声。
 
 ---
 
